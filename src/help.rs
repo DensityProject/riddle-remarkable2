@@ -13,9 +13,7 @@ pub fn looks_like_question_mark(strokes: &[Vec<(i32, i32, i32)>]) -> bool {
     if strokes.is_empty() || strokes.len() > 3 {
         return false;
     }
-    let main_i = (0..strokes.len())
-        .max_by_key(|&i| strokes[i].len())
-        .unwrap();
+    let main_i = (0..strokes.len()).max_by_key(|&i| strokes[i].len()).unwrap();
     let main = &strokes[main_i];
     if main.len() < 12 {
         return false;
@@ -147,11 +145,7 @@ pub struct Help {
 /// The gesture list depends on the display mode: only takeover owns the
 /// touchscreen (5-finger exit) and the power button.
 pub fn show(surf: &mut Surface, font: &FontRef, takeover: bool) -> Help {
-    let body = if takeover {
-        BODY_TAKEOVER
-    } else {
-        BODY_WINDOWED
-    };
+    let body = if takeover { BODY_TAKEOVER } else { BODY_WINDOWED };
     let title_h = (TITLE_PX * 1.4) as usize;
     let line_h = (BODY_PX * 1.3) as usize;
     let footer_h = (FOOTER_PX * 1.4) as usize;
@@ -186,14 +180,7 @@ pub fn show(surf: &mut Surface, font: &FontRef, takeover: bool) -> Help {
     let mut region = BBox::empty();
     region.add(px as i32, py as i32, 2);
     region.add((px + pw) as i32, (py + ph) as i32, 2);
-    Help {
-        region,
-        x: px,
-        y: py,
-        w: pw,
-        h: ph,
-        saved,
-    }
+    Help { region, x: px, y: py, w: pw, h: ph, saved }
 }
 
 impl Help {
@@ -215,15 +202,7 @@ pub fn show_sleep(surf: &mut Surface, font: &FontRef) -> Vec<u8> {
     frame(surf, 66, 66, sw - 132, sh - 132, 1);
     let y = sh * 38 / 100;
     blit_centered(surf, font, "The diary sleeps.", 116.0, 0, sw, y);
-    blit_centered(
-        surf,
-        font,
-        "Press the button to wake it.",
-        56.0,
-        0,
-        sw,
-        y + 230,
-    );
+    blit_centered(surf, font, "Press the button to wake it.", 56.0, 0, sw, y + 230);
     saved
 }
 
@@ -238,15 +217,7 @@ fn frame(surf: &mut Surface, x: usize, y: usize, w: usize, h: usize, t: usize) {
     surf.fill_rect(x + w - t, y, t, h, BLACK);
 }
 
-fn blit_centered(
-    surf: &mut Surface,
-    font: &FontRef,
-    text: &str,
-    px_size: f32,
-    panel_x: usize,
-    panel_w: usize,
-    y: usize,
-) {
+fn blit_centered(surf: &mut Surface, font: &FontRef, text: &str, px_size: f32, panel_x: usize, panel_w: usize, y: usize) {
     let line = script::rasterize_line(font, text, px_size);
     let x = panel_x + panel_w.saturating_sub(line.width) / 2;
     for row in 0..line.height {
@@ -306,10 +277,7 @@ mod tests {
         assert!(!looks_like_question_mark(&question_mark(0.5, true, false)));
         // "!" — vertical bar plus dot.
         let bar: Vec<(i32, i32)> = (0..40).map(|i| (200, 60 + i * 12)).collect();
-        assert!(!looks_like_question_mark(&[
-            stroke(&bar),
-            stroke(&[(200, 600), (204, 604)])
-        ]));
+        assert!(!looks_like_question_mark(&[stroke(&bar), stroke(&[(200, 600), (204, 604)])]));
         // "7" — flat top bar, diagonal descender.
         let mut seven: Vec<(i32, i32)> = (0..20).map(|i| (80 + i * 12, 60)).collect();
         seven.extend((0..40).map(|i| (320 - i * 4, 60 + i * 12)));
@@ -321,12 +289,7 @@ mod tests {
         // Empty / too many strokes.
         assert!(!looks_like_question_mark(&[]));
         let dot = stroke(&[(0, 0), (1, 1)]);
-        assert!(!looks_like_question_mark(&[
-            dot.clone(),
-            dot.clone(),
-            dot.clone(),
-            dot
-        ]));
+        assert!(!looks_like_question_mark(&[dot.clone(), dot.clone(), dot.clone(), dot]));
     }
 
     #[test]
@@ -412,10 +375,6 @@ mod tests {
         eprintln!("sleep snapshot: {}", out.display());
 
         restore_sleep(&mut surf, &saved);
-        assert_eq!(
-            before,
-            surf.copy_rect(0, 0, w, h),
-            "sleep restore is not exact"
-        );
+        assert_eq!(before, surf.copy_rect(0, 0, w, h), "sleep restore is not exact");
     }
 }

@@ -11,8 +11,7 @@ fn main() {
         // sysroot. rpath-link only (NOT link-search: the SDK's libc/libm are
         // linker scripts with absolute paths that break outside --sysroot).
         if let Ok(home) = std::env::var("HOME") {
-            let sysroot =
-                format!("{home}/rm-sdk-3.26/sysroots/cortexa53-crypto-remarkable-linux/usr/lib");
+            let sysroot = format!("{home}/rm-sdk-3.26/sysroots/cortexa53-crypto-remarkable-linux/usr/lib");
             println!("cargo:rustc-link-arg=-Wl,-rpath-link,{sysroot}");
         }
     }

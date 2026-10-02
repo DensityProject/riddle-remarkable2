@@ -38,19 +38,14 @@ pub fn rasterize_line(font: &FontRef, text: &str, px: f32) -> Line {
                 if cov > 0.5 {
                     let px_x = bounds.min.x as i32 + x as i32;
                     let px_y = bounds.min.y as i32 + y as i32;
-                    if px_x >= 0 && px_y >= 0 && (px_x as usize) < width && (px_y as usize) < height
-                    {
+                    if px_x >= 0 && px_y >= 0 && (px_x as usize) < width && (px_y as usize) < height {
                         mask[px_y as usize * width + px_x as usize] = true;
                     }
                 }
             });
         }
     }
-    Line {
-        width,
-        height,
-        mask,
-    }
+    Line { width, height, mask }
 }
 
 /// Measure the advance width of text at `px` without rasterizing.
@@ -133,11 +128,7 @@ pub fn thin(line: &mut Line) {
 pub fn trace(line: &Line) -> Vec<Vec<(i32, i32)>> {
     let (w, h) = (line.width, line.height);
     let at = |x: i32, y: i32| -> bool {
-        x >= 0
-            && y >= 0
-            && (x as usize) < w
-            && (y as usize) < h
-            && line.mask[y as usize * w + x as usize]
+        x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && line.mask[y as usize * w + x as usize]
     };
     let neighbors = |x: i32, y: i32| -> Vec<(i32, i32)> {
         let mut out = Vec::new();
@@ -210,11 +201,7 @@ pub fn wrap(font: &FontRef, text: &str, px: f32, max_px: f32) -> Vec<String> {
     for para in text.lines() {
         let mut cur = String::new();
         for word in para.split_whitespace() {
-            let cand = if cur.is_empty() {
-                word.to_string()
-            } else {
-                format!("{cur} {word}")
-            };
+            let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
             if measure(font, &cand, px) <= max_px || cur.is_empty() {
                 cur = cand;
             } else {
@@ -241,28 +228,14 @@ mod tests {
         let inked_before: usize = line.mask.iter().filter(|&&v| v).count();
         thin(&mut line);
         let inked_after: usize = line.mask.iter().filter(|&&v| v).count();
-        assert!(
-            inked_after * 3 < inked_before,
-            "thinning should slim the glyphs: {inked_before} -> {inked_after}"
-        );
+        assert!(inked_after * 3 < inked_before, "thinning should slim the glyphs: {inked_before} -> {inked_after}");
         let strokes = trace(&line);
         assert!(!strokes.is_empty());
         let total: usize = strokes.iter().map(|s| s.len()).sum();
-        println!(
-            "strokes={} total_points={} ({}x{})",
-            strokes.len(),
-            total,
-            line.width,
-            line.height
-        );
+        println!("strokes={} total_points={} ({}x{})", strokes.len(), total, line.width, line.height);
         assert!(total > 200, "expected a decent path length, got {total}");
         // Wrap sanity.
-        let lines = wrap(
-            &font,
-            "Do you know anything about the Chamber of Secrets?",
-            96.0,
-            1380.0,
-        );
+        let lines = wrap(&font, "Do you know anything about the Chamber of Secrets?", 96.0, 1380.0);
         assert!(lines.len() >= 2);
     }
 }

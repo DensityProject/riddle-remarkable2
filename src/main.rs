@@ -59,55 +59,21 @@ oracle.env.example for every RIDDLE_* variable.
 type OracleRx = mpsc::Receiver<Result<Event, String>>;
 
 enum State {
-    Listening {
-        last_pen: Option<Instant>,
-    },
-    Drinking {
-        stage: u32,
-        next: Instant,
-        region: BBox,
-        rx: OracleRx,
-    },
-    Thinking {
-        rx: OracleRx,
-        pulse: Instant,
-        blot_on: bool,
-        since: Instant,
-    },
-    Replying {
-        plan: WritePlan,
-        next: Instant,
-        rx: Option<OracleRx>,
-    },
-    Lingering {
-        until: Instant,
-        region: BBox,
-    },
-    FadingReply {
-        stage: u32,
-        next: Instant,
-        region: BBox,
-    },
+    Listening { last_pen: Option<Instant> },
+    Drinking { stage: u32, next: Instant, region: BBox, rx: OracleRx },
+    Thinking { rx: OracleRx, pulse: Instant, blot_on: bool, since: Instant },
+    Replying { plan: WritePlan, next: Instant, rx: Option<OracleRx> },
+    Lingering { until: Instant, region: BBox },
+    FadingReply { stage: u32, next: Instant, region: BBox },
     /// The guide panel. `panel: None` = dismissed, waiting for pen-up so the
     /// dismissing touch doesn't leave a mark on the page.
-    Help {
-        panel: Option<help::Help>,
-        until: Instant,
-    },
+    Help { panel: Option<help::Help>, until: Instant },
     /// A remembered page rising through the paper: date, the writer's own
     /// past ink, Tom's old reply — all in faded ink. `saved` is today's page.
-    Conjuring {
-        plan: ConjurePlan,
-        next: Instant,
-        saved: Vec<u8>,
-    },
+    Conjuring { plan: ConjurePlan, next: Instant, saved: Vec<u8> },
     /// The conjured memory rests on the page. Pen contact (or time) dissolves
     /// it and today's page returns. `saved: None` = dismissed, waiting pen-up.
-    MemoryShown {
-        saved: Option<Vec<u8>>,
-        until: Instant,
-        region: BBox,
-    },
+    MemoryShown { saved: Option<Vec<u8>>, until: Instant, region: BBox },
 }
 
 /// A memory being rewritten onto the page: pre-positioned strokes with their
@@ -196,34 +162,20 @@ fn oracle_test(png: &str) -> i32 {
             Err(_) => break, // disconnected = reply complete
         }
     }
-    println!(
-        "\n--- reply complete ({}ms, {} chars) ---",
-        t0.elapsed().as_millis(),
-        got.len()
-    );
-    if got.trim().is_empty() {
-        1
-    } else {
-        0
-    }
+    println!("\n--- reply complete ({}ms, {} chars) ---", t0.elapsed().as_millis(), got.len());
+    if got.trim().is_empty() { 1 } else { 0 }
 }
 
 /// What the diary sends alongside the page: its memory of recent turns and
 /// the catalog the oracle picks conjured pages from. Empty when memory is off.
 fn build_ctx(store: &Option<memory::MemoryStore>) -> oracle::TurnContext {
-    let Some(s) = store else {
-        return oracle::TurnContext::default();
-    };
+    let Some(s) = store else { return oracle::TurnContext::default() };
     let turns: usize = std::env::var("RIDDLE_MEMORY_TURNS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
     let (catalog_lines, catalog_ids) = s.catalog(40);
-    oracle::TurnContext {
-        history: s.recent_dialogue(turns),
-        catalog_lines,
-        catalog_ids,
-    }
+    oracle::TurnContext { history: s.recent_dialogue(turns), catalog_lines, catalog_ids }
 }
 
 fn run() -> std::io::Result<()> {
@@ -248,16 +200,10 @@ fn run() -> std::io::Result<()> {
         }
     };
     // Takeover mode: touch is ours too; 5-finger tap = quit.
-    let mut touch_dev = if takeover {
-        touch::TouchDevice::open().ok()
-    } else {
-        None
-    };
+    let mut touch_dev = if takeover { touch::TouchDevice::open().ok() } else { None };
     // Takeover mode: the power button is ours too (sleep page + suspend).
     let mut power_dev = if takeover {
-        power::PowerButton::open()
-            .map_err(|e| eprintln!("riddle: no power button ({e})"))
-            .ok()
+        power::PowerButton::open().map_err(|e| eprintln!("riddle: no power button ({e})")).ok()
     } else {
         None
     };
@@ -311,11 +257,7 @@ fn run() -> std::io::Result<()> {
     let mut ink_dirty = BBox::empty();
     let mut last_flush = Instant::now();
     // Takeover swaps are cheap and synchronous; qtfb needs coalescing.
-    let flush_every = if takeover {
-        Duration::from_millis(8)
-    } else {
-        Duration::from_millis(35)
-    };
+    let flush_every = if takeover { Duration::from_millis(8) } else { Duration::from_millis(35) };
 
     eprintln!("riddle: the diary is open");
 
@@ -347,9 +289,7 @@ fn run() -> std::io::Result<()> {
                 let mut attempts = 0;
                 'sleeping: loop {
                     if p.grabbed {
-                        let _ = std::process::Command::new("systemctl")
-                            .arg("suspend")
-                            .status();
+                        let _ = std::process::Command::new("systemctl").arg("suspend").status();
                     }
                     attempts += 1;
                     let t0 = Instant::now();
@@ -360,9 +300,7 @@ fn run() -> std::io::Result<()> {
                         }
                     }
                     if attempts >= 8 {
-                        eprintln!(
-                            "riddle: suspend never happened ({attempts} tries); waking the page"
-                        );
+                        eprintln!("riddle: suspend never happened ({attempts} tries); waking the page");
                         break;
                     }
                     eprintln!("riddle: suspend aborted (EPD discharge timer), retrying");
@@ -417,11 +355,7 @@ fn run() -> std::io::Result<()> {
                         *last_pen = Some(Instant::now());
                     }
                     State::Lingering { region, .. } => {
-                        state = State::FadingReply {
-                            stage: 0,
-                            next: Instant::now(),
-                            region,
-                        };
+                        state = State::FadingReply { stage: 0, next: Instant::now(), region };
                     }
                     _ => {}
                 }
@@ -451,11 +385,7 @@ fn run() -> std::io::Result<()> {
                         }
                         *last_pen = Some(Instant::now());
                     } else if let State::Lingering { region, .. } = state {
-                        state = State::FadingReply {
-                            stage: 0,
-                            next: Instant::now(),
-                            region,
-                        };
+                        state = State::FadingReply { stage: 0, next: Instant::now(), region };
                     }
                 }
                 qtfb::INPUT_PEN_RELEASE => {
@@ -499,20 +429,13 @@ fn run() -> std::io::Result<()> {
                         let (px, py, pw, ph) = panel.region.rect();
                         disp.update(px, py, pw, ph, false);
                         eprintln!("riddle: guide shown");
-                        State::Help {
-                            panel: Some(panel),
-                            until: Instant::now() + Duration::from_secs(45),
-                        }
+                        State::Help { panel: Some(panel), until: Instant::now() + Duration::from_secs(45) }
                     } else if oracle.is_none() {
                         // No spirit at all: don't eat ink that nothing will
                         // answer — leave the writing and put the reason below.
                         let y = (user_ink.bbox.y1 + 90).min(screen_h() as i32 - 400);
                         let plan = plan_reply(&font, &oracle_excuse("no oracle"), Some(y));
-                        State::Replying {
-                            plan,
-                            next: Instant::now(),
-                            rx: None,
-                        }
+                        State::Replying { plan, next: Instant::now(), rx: None }
                     } else {
                         if let Err(e) = user_ink.to_png(&surf, PNG_PATH) {
                             eprintln!("riddle: rasterize failed: {e}");
@@ -539,23 +462,13 @@ fn run() -> std::io::Result<()> {
                             let _ = std::fs::remove_file(PNG_PATH);
                         }
                         let region = user_ink.bbox;
-                        State::Drinking {
-                            stage: 0,
-                            next: Instant::now(),
-                            region,
-                            rx,
-                        }
+                        State::Drinking { stage: 0, next: Instant::now(), region, rx }
                     }
                 }
                 _ => State::Listening { last_pen },
             },
 
-            State::Drinking {
-                stage,
-                next,
-                region,
-                rx,
-            } => {
+            State::Drinking { stage, next, region, rx } => {
                 const STAGES: u32 = 14;
                 if Instant::now() >= next {
                     ink::dissolve_pass(&mut surf, region, stage, STAGES);
@@ -563,36 +476,16 @@ fn run() -> std::io::Result<()> {
                     disp.update(x, y, w, h, true);
                     if stage + 1 >= STAGES {
                         user_ink.clear();
-                        State::Thinking {
-                            rx,
-                            pulse: Instant::now(),
-                            blot_on: false,
-                            since: Instant::now(),
-                        }
+                        State::Thinking { rx, pulse: Instant::now(), blot_on: false, since: Instant::now() }
                     } else {
-                        State::Drinking {
-                            stage: stage + 1,
-                            next: Instant::now() + Duration::from_millis(70),
-                            region,
-                            rx,
-                        }
+                        State::Drinking { stage: stage + 1, next: Instant::now() + Duration::from_millis(70), region, rx }
                     }
                 } else {
-                    State::Drinking {
-                        stage,
-                        next,
-                        region,
-                        rx,
-                    }
+                    State::Drinking { stage, next, region, rx }
                 }
             }
 
-            State::Thinking {
-                rx,
-                pulse,
-                blot_on,
-                since,
-            } => match rx.try_recv() {
+            State::Thinking { rx, pulse, blot_on, since } => match rx.try_recv() {
                 Ok(result) => {
                     surf.fill_rect(screen_w() / 2 - 14, screen_h() / 2 - 14, 28, 28, WHITE);
                     disp.update(
@@ -614,43 +507,26 @@ fn run() -> std::io::Result<()> {
                                     eprintln!("riddle: memory {id} is missing");
                                     let plan = plan_reply(&font, &oracle_excuse("lost page"), None);
                                     turn_failed = true;
-                                    State::Replying {
-                                        plan,
-                                        next: Instant::now(),
-                                        rx: None,
-                                    }
+                                    State::Replying { plan, next: Instant::now(), rx: None }
                                 }
                             }
                         }
                         Ok(Event::Ink(text)) => {
                             turn_reply.push_str(&text);
                             let plan = plan_reply(&font, &text, None);
-                            State::Replying {
-                                plan,
-                                next: Instant::now(),
-                                rx: Some(rx),
-                            }
+                            State::Replying { plan, next: Instant::now(), rx: Some(rx) }
                         }
                         Ok(Event::Transcript(t)) => {
                             // Transcript with no prose (model skipped the
                             // reply): remember the words, keep waiting.
                             turn_transcript = Some(t);
-                            State::Thinking {
-                                rx,
-                                pulse,
-                                blot_on,
-                                since,
-                            }
+                            State::Thinking { rx, pulse, blot_on, since }
                         }
                         Err(e) => {
                             eprintln!("riddle: oracle failed: {e}");
                             turn_failed = true;
                             let plan = plan_reply(&font, &oracle_excuse(&e), None);
-                            State::Replying {
-                                plan,
-                                next: Instant::now(),
-                                rx: None,
-                            }
+                            State::Replying { plan, next: Instant::now(), rx: None }
                         }
                     }
                 }
@@ -658,10 +534,7 @@ fn run() -> std::io::Result<()> {
                     if since.elapsed() >= ORACLE_PATIENCE {
                         // The oracle never answered (stalled stream, dead pi):
                         // stop pulsing and say so instead of thinking forever.
-                        eprintln!(
-                            "riddle: oracle timed out after {}s",
-                            ORACLE_PATIENCE.as_secs()
-                        );
+                        eprintln!("riddle: oracle timed out after {}s", ORACLE_PATIENCE.as_secs());
                         surf.fill_rect(screen_w() / 2 - 14, screen_h() / 2 - 14, 28, 28, WHITE);
                         disp.update(
                             screen_w() as i32 / 2 - 14,
@@ -671,11 +544,7 @@ fn run() -> std::io::Result<()> {
                             true,
                         );
                         let plan = plan_reply(&font, &oracle_excuse("timed out"), None);
-                        State::Replying {
-                            plan,
-                            next: Instant::now(),
-                            rx: None,
-                        }
+                        State::Replying { plan, next: Instant::now(), rx: None }
                     } else if pulse.elapsed() >= Duration::from_millis(600) {
                         let (cx, cy) = (screen_w() as i32 / 2, screen_h() as i32 / 2);
                         if blot_on {
@@ -684,29 +553,15 @@ fn run() -> std::io::Result<()> {
                             surf.stamp(cx, cy, 9, BLACK);
                         }
                         disp.update(cx - 14, cy - 14, 28, 28, true);
-                        State::Thinking {
-                            rx,
-                            pulse: Instant::now(),
-                            blot_on: !blot_on,
-                            since,
-                        }
+                        State::Thinking { rx, pulse: Instant::now(), blot_on: !blot_on, since }
                     } else {
-                        State::Thinking {
-                            rx,
-                            pulse,
-                            blot_on,
-                            since,
-                        }
+                        State::Thinking { rx, pulse, blot_on, since }
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => State::Listening { last_pen: None },
             },
 
-            State::Replying {
-                mut plan,
-                next,
-                mut rx,
-            } => {
+            State::Replying { mut plan, next, mut rx } => {
                 // More of the reply may still be streaming in: append each
                 // new chunk below what is already planned, mid-animation.
                 if let Some(ref r) = rx {
@@ -715,9 +570,7 @@ fn run() -> std::io::Result<()> {
                             if plan.next_y > screen_h() as i32 - 200 {
                                 // The page is full: let the rest go unwritten
                                 // rather than inking below the visible page.
-                                eprintln!(
-                                    "riddle: reply reached the page bottom; trailing text dropped"
-                                );
+                                eprintln!("riddle: reply reached the page bottom; trailing text dropped");
                                 true
                             } else {
                                 turn_reply.push_str(" ");
@@ -787,16 +640,9 @@ fn run() -> std::io::Result<()> {
                         let chars: usize = plan.strokes.iter().map(|s| s.len()).sum();
                         let linger = Duration::from_millis(4000 + (chars as u64) * 2);
                         let region = plan.region;
-                        State::Lingering {
-                            until: Instant::now() + linger.min(Duration::from_secs(20)),
-                            region,
-                        }
+                        State::Lingering { until: Instant::now() + linger.min(Duration::from_secs(20)), region }
                     } else {
-                        State::Replying {
-                            plan,
-                            next: Instant::now() + Duration::from_millis(14),
-                            rx,
-                        }
+                        State::Replying { plan, next: Instant::now() + Duration::from_millis(14), rx }
                     }
                 } else {
                     State::Replying { plan, next, rx }
@@ -805,11 +651,7 @@ fn run() -> std::io::Result<()> {
 
             State::Lingering { until, region } => {
                 if Instant::now() >= until {
-                    State::FadingReply {
-                        stage: 0,
-                        next: Instant::now(),
-                        region,
-                    }
+                    State::FadingReply { stage: 0, next: Instant::now(), region }
                 } else {
                     State::Lingering { until, region }
                 }
@@ -824,10 +666,7 @@ fn run() -> std::io::Result<()> {
                         eprintln!("riddle: guide dismissed");
                         State::Help { panel: None, until }
                     } else {
-                        State::Help {
-                            panel: Some(p),
-                            until,
-                        }
+                        State::Help { panel: Some(p), until }
                     }
                 }
                 // Dismissed: swallow the closing touch, listen again on pen-up.
@@ -835,20 +674,12 @@ fn run() -> std::io::Result<()> {
                 None => State::Listening { last_pen: None },
             },
 
-            State::Conjuring {
-                mut plan,
-                next,
-                saved,
-            } => {
+            State::Conjuring { mut plan, next, saved } => {
                 if stylus_tapped {
                     // The writer interrupts: today's page returns at once.
                     surf.paste_rect(0, 0, screen_w(), screen_h(), &saved);
                     disp.full_refresh(surf.w, surf.h);
-                    State::MemoryShown {
-                        saved: None,
-                        until: Instant::now(),
-                        region: plan.region,
-                    }
+                    State::MemoryShown { saved: None, until: Instant::now(), region: plan.region }
                 } else if Instant::now() >= next {
                     // The memory pours back faster than Tom writes: it is
                     // remembered, not composed.
@@ -884,55 +715,31 @@ fn run() -> std::io::Result<()> {
                             region,
                         }
                     } else {
-                        State::Conjuring {
-                            plan,
-                            next: Instant::now() + Duration::from_millis(10),
-                            saved,
-                        }
+                        State::Conjuring { plan, next: Instant::now() + Duration::from_millis(10), saved }
                     }
                 } else {
                     State::Conjuring { plan, next, saved }
                 }
             }
 
-            State::MemoryShown {
-                saved,
-                until,
-                region,
-            } => match saved {
+            State::MemoryShown { saved, until, region } => match saved {
                 Some(s) => {
                     if stylus_tapped || Instant::now() >= until {
                         // The paper swallows its memory; today's page returns.
                         surf.paste_rect(0, 0, screen_w(), screen_h(), &s);
                         disp.full_refresh(surf.w, surf.h);
                         eprintln!("riddle: memory dismissed");
-                        State::MemoryShown {
-                            saved: None,
-                            until,
-                            region,
-                        }
+                        State::MemoryShown { saved: None, until, region }
                     } else {
-                        State::MemoryShown {
-                            saved: Some(s),
-                            until,
-                            region,
-                        }
+                        State::MemoryShown { saved: Some(s), until, region }
                     }
                 }
                 // Dismissed: swallow the closing touch, listen again on pen-up.
-                None if stylus_on => State::MemoryShown {
-                    saved: None,
-                    until,
-                    region,
-                },
+                None if stylus_on => State::MemoryShown { saved: None, until, region },
                 None => State::Listening { last_pen: None },
             },
 
-            State::FadingReply {
-                stage,
-                next,
-                region,
-            } => {
+            State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
                 if Instant::now() >= next {
                     ink::dissolve_pass(&mut surf, region, stage, STAGES);
@@ -942,18 +749,10 @@ fn run() -> std::io::Result<()> {
                         disp.full_refresh(surf.w, surf.h);
                         State::Listening { last_pen: None }
                     } else {
-                        State::FadingReply {
-                            stage: stage + 1,
-                            next: Instant::now() + Duration::from_millis(80),
-                            region,
-                        }
+                        State::FadingReply { stage: stage + 1, next: Instant::now() + Duration::from_millis(80), region }
                     }
                 } else {
-                    State::FadingReply {
-                        stage,
-                        next,
-                        region,
-                    }
+                    State::FadingReply { stage, next, region }
                 }
             }
         };
@@ -1016,10 +815,7 @@ fn conjure(
     let s = store.as_ref()?;
     let entry = s.get(id)?.clone();
     let strokes = s.strokes(id).unwrap_or_default();
-    eprintln!(
-        "riddle: conjuring memory {id} ({})",
-        memory::spoken_date(id)
-    );
+    eprintln!("riddle: conjuring memory {id} ({})", memory::spoken_date(id));
 
     let saved = surf.copy_rect(0, 0, screen_w(), screen_h());
     surf.fill_rect(0, 0, screen_w(), screen_h(), WHITE);
@@ -1035,10 +831,8 @@ fn conjure(
     let x0 = (screen_w() as i32 - raster.width as i32) / 2;
     let mut ink_bottom = 64;
     for stroke in script::trace(&raster) {
-        let mapped: Vec<(i32, i32, i32)> = stroke
-            .iter()
-            .map(|&(sx, sy)| (x0 + sx, 64 + sy, 1))
-            .collect();
+        let mapped: Vec<(i32, i32, i32)> =
+            stroke.iter().map(|&(sx, sy)| (x0 + sx, 64 + sy, 1)).collect();
         for &(x, y, r) in &mapped {
             region.add(x, y, r + 2);
             ink_bottom = ink_bottom.max(y);
@@ -1069,12 +863,7 @@ fn conjure(
     }
 
     Some(State::Conjuring {
-        plan: ConjurePlan {
-            strokes: all,
-            stroke_i: 0,
-            point_i: 0,
-            region,
-        },
+        plan: ConjurePlan { strokes: all, stroke_i: 0, point_i: 0, region },
         next: Instant::now(),
         saved,
     })
@@ -1103,10 +892,7 @@ fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
         let x0 = (screen_w() as i32 - raster.width as i32) / 2;
         let wobble = jitter();
         for s in line_strokes {
-            let mapped: Vec<(i32, i32)> = s
-                .iter()
-                .map(|&(sx, sy)| (x0 + sx, y + sy + wobble))
-                .collect();
+            let mapped: Vec<(i32, i32)> = s.iter().map(|&(sx, sy)| (x0 + sx, y + sy + wobble)).collect();
             for &(x, yy) in &mapped {
                 region.add(x, yy, 5);
             }
@@ -1115,13 +901,7 @@ fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
         y += line_h;
     }
 
-    WritePlan {
-        strokes,
-        stroke_i: 0,
-        point_i: 0,
-        region,
-        next_y: y,
-    }
+    WritePlan { strokes, stroke_i: 0, point_i: 0, region, next_y: y }
 }
 
 /// Splice a streamed continuation chunk into a running write animation.
