@@ -1,4 +1,4 @@
-# riddle — the diary of Tom Riddle, for the reMarkable Paper Pro
+# riddle — the diary of Tom Riddle, for reMarkable tablets
 
 Write on the page with your pen. After a pause, the diary **drinks your ink** —
 your words fade into the paper — the page thinks for a moment, and an answer
@@ -10,7 +10,7 @@ _This is the diary from [the demo](https://x.com/MaximeRivest)._
 
 ### 🪄 New to this? Start here
 
-You need a **reMarkable Paper Pro** in developer mode with a launcher installed.
+You need a **reMarkable tablet** in developer mode with a launcher installed.
 If that sounds like a lot, it isn't — **[remagic](https://github.com/maximerivest/remagic)**
 walks you through turning on developer mode and sets up everything with one
 command. Come back here, drop riddle in, and start writing to Tom.
@@ -42,7 +42,7 @@ pen. (Or install it from the **Store** app right on the tablet.)
 > run in **takeover mode**: tapping The Diary stops the whole reMarkable UI
 > and takes the screen. Leave with a **5-finger tap** — xochitl restarts
 > automatically. It runs as root and drives the e-ink engine directly. It has
-> only been tested on a **reMarkable Paper Pro** (ferrari, aarch64,
+> has been tested on a **reMarkable Paper Pro** (ferrari, aarch64,
 > OS 3.26–3.27). It may not work on other models or OS versions, and you use
 > it entirely at your own risk. Not affiliated with reMarkable AS. Keep SSH
 > access working before you install anything — if anything ever wedges:
@@ -190,6 +190,21 @@ git clone https://github.com/MaximeRivest/riddle
 cd riddle
 cargo build --release --target aarch64-unknown-linux-gnu
 ```
+
+#### reMarkable 2 notes (windowed port)
+
+The **windowed qtfb backend** can run on reMarkable 2 by overriding panel
+settings in the launcher script/environment before starting `riddle`:
+
+```sh
+export RIDDLE_QTFB_WIDTH=1404
+export RIDDLE_QTFB_HEIGHT=1872
+# Set this to the qtfb format id your AppLoad build expects (default is 3).
+export RIDDLE_QTFB_FORMAT=3
+```
+
+Takeover mode is still Paper Pro-specific (it depends on the Quill/libqsgepaper
+stack used by this repository's bundle scripts).
 
 Install the binary to `/home/root/xovi/exthome/appload/riddle/` with an
 `external.manifest.json` that sets `"qtfb": true` and points `"application"`

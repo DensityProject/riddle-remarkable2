@@ -5,6 +5,8 @@
 use std::io;
 use std::os::fd::RawFd;
 
+use crate::fb::screen_h;
+
 const EV_SYN: u16 = 0;
 const SYN_REPORT: u16 = 0;
 const EV_ABS: u16 = 3;
@@ -13,7 +15,7 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const ABS_MT_TRACKING_ID: u16 = 57;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
 const MAX_SLOTS: usize = 16;
-const SCREEN_H: i32 = 2160;
+const TOUCH_MIN_Y: i32 = 0;
 const TOUCH_MAX_Y: i32 = 2832;
 const TAP_SLOP: i32 = 45;
 
@@ -43,6 +45,8 @@ pub struct TouchDevice {
     frame_y: Option<i32>,
     total_motion: i32,
     quit_sent: bool,
+    raw_min_y: i32,
+    raw_max_y: i32,
 }
 
 impl TouchDevice {
@@ -58,6 +62,8 @@ impl TouchDevice {
                         return Err(io::Error::last_os_error());
                     }
                     unsafe { libc::ioctl(fd, EVIOCGRAB, 1i32) };
+                    let (raw_min_y, raw_max_y) = read_abs_min_max(i, ABS_MT_POSITION_Y)
+                        .unwrap_or((TOUCH_MIN_Y, TOUCH_MAX_Y));
                     return Ok(Self {
                         fd,
                         slots: [Slot::default(); MAX_SLOTS],
@@ -66,6 +72,8 @@ impl TouchDevice {
                         frame_y: None,
                         total_motion: 0,
                         quit_sent: false,
+                        raw_min_y,
+                        raw_max_y,
                     });
                 }
             }
@@ -141,7 +149,8 @@ impl TouchDevice {
             let raw_delta = previous - current;
             self.total_motion += raw_delta.abs();
             if count == 2 {
-                let pixels = raw_delta * SCREEN_H / TOUCH_MAX_Y;
+                let range = (self.raw_max_y - self.raw_min_y).max(1);
+                let pixels = raw_delta * screen_h() as i32 / range;
                 if pixels != 0 {
                     out.push(Gesture::Scroll(pixels));
                 }
@@ -184,4 +193,13 @@ impl Drop for TouchDevice {
             libc::close(self.fd);
         }
     }
+}
+
+fn read_abs_min_max(event_i: usize, code: u16) -> Option<(i32, i32)> {
+    let path = format!("/sys/class/input/event{event_i}/device/abs/abs{code}");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let mut parts = raw.split_whitespace();
+    let min = parts.next()?.parse().ok()?;
+    let max = parts.next()?.parse().ok()?;
+    Some((min, max))
 }

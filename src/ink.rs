@@ -14,7 +14,12 @@ pub struct Ink {
 
 impl Ink {
     pub fn new() -> Self {
-        Self { strokes: Vec::new(), current: Vec::new(), last_erase: None, bbox: BBox::empty() }
+        Self {
+            strokes: Vec::new(),
+            current: Vec::new(),
+            last_erase: None,
+            bbox: BBox::empty(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -126,7 +131,8 @@ impl Ink {
                 let mut acc = 0u32;
                 for sy in 0..f {
                     for sx in 0..f {
-                        acc += surf.luma((x0 + ox * f + sx) as i32, (y0 + oy * f + sy) as i32) as u32;
+                        acc +=
+                            surf.luma((x0 + ox * f + sx) as i32, (y0 + oy * f + sy) as i32) as u32;
                     }
                 }
                 gray[oy * w + ox] = (acc / (f * f) as u32) as u8;
@@ -198,8 +204,15 @@ mod tests {
         // Erase through the middle: the stroke splits, points vanish.
         ink.erase_point(&mut s, 110, 100, 20);
         let after: usize = ink.stroke_list().iter().map(|s| s.len()).sum();
-        assert!(after < before, "erase kept every point ({after} of {before})");
-        assert_eq!(ink.stroke_list().len(), 2, "middle-erase should split the stroke");
+        assert!(
+            after < before,
+            "erase kept every point ({after} of {before})"
+        );
+        assert_eq!(
+            ink.stroke_list().len(),
+            2,
+            "middle-erase should split the stroke"
+        );
         // No surviving point lies under the eraser.
         for st in ink.stroke_list() {
             for &(x, y, _) in st {

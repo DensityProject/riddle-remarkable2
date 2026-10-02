@@ -235,12 +235,10 @@ impl PiOracle {
 
         // Overridable so pi setups other than the stock on-device install
         // (different bin dir, provider, or model) can still power the diary.
-        let node_bin =
-            std::env::var("RIDDLE_PI_BIN_DIR").unwrap_or_else(|_| NODE_BIN.to_string());
+        let node_bin = std::env::var("RIDDLE_PI_BIN_DIR").unwrap_or_else(|_| NODE_BIN.to_string());
         let provider =
             std::env::var("RIDDLE_PI_PROVIDER").unwrap_or_else(|_| "openai-codex".to_string());
-        let model =
-            std::env::var("RIDDLE_PI_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+        let model = std::env::var("RIDDLE_PI_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
 
         let persona = if remember {
             format!("{PERSONA}{MEMORY_PROTOCOL}")
@@ -257,14 +255,19 @@ impl PiOracle {
             .env("HOME", "/home/root")
             .env("PATH", format!("{node_bin}:{path}"))
             .args([
-                "--mode", "rpc",
-                "--provider", provider.as_str(),
-                "--model", model.as_str(),
-                "--thinking", "off",
+                "--mode",
+                "rpc",
+                "--provider",
+                provider.as_str(),
+                "--model",
+                model.as_str(),
+                "--thinking",
+                "off",
                 // The diary only ever writes back — never let the model touch
                 // tools; also trims the tool schemas from every request.
                 "--no-tools",
-                "--system-prompt", persona.as_str(),
+                "--system-prompt",
+                persona.as_str(),
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -280,8 +283,7 @@ impl PiOracle {
         eprintln!("riddle: oracle pi rpc spawned (pid {pid}, bin {pi_bin})");
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
-        let pending: Arc<Mutex<Option<Sender<Result<Event, String>>>>> =
-            Arc::new(Mutex::new(None));
+        let pending: Arc<Mutex<Option<Sender<Result<Event, String>>>>> = Arc::new(Mutex::new(None));
         let parser: Arc<Mutex<Option<StreamParser>>> = Arc::new(Mutex::new(None));
 
         // Reader thread: parse JSONL events, feeding the running reply text
@@ -310,7 +312,9 @@ impl PiOracle {
             };
 
             for line in reader.split(b'\n').map_while(Result::ok) {
-                let Ok(s) = String::from_utf8(line) else { continue };
+                let Ok(s) = String::from_utf8(line) else {
+                    continue;
+                };
                 let s = s.trim();
                 if s.is_empty() {
                     continue;
@@ -353,7 +357,13 @@ impl PiOracle {
             }
         });
 
-        Ok(Self { stdin: Arc::new(Mutex::new(stdin)), pending, parser, asked, _child: child })
+        Ok(Self {
+            stdin: Arc::new(Mutex::new(stdin)),
+            pending,
+            parser,
+            asked,
+            _child: child,
+        })
     }
 
     /// Send a handwriting turn. Reply events are delivered on `tx` as they
@@ -378,7 +388,11 @@ impl PiOracle {
             img
         );
         let mut stdin = self.stdin.lock().unwrap();
-        if stdin.write_all(cmd.as_bytes()).and_then(|_| stdin.flush()).is_err() {
+        if stdin
+            .write_all(cmd.as_bytes())
+            .and_then(|_| stdin.flush())
+            .is_err()
+        {
             if let Some(tx) = self.pending.lock().unwrap().take() {
                 let _ = tx.send(Err("pi rpc write failed".into()));
             }
@@ -390,7 +404,7 @@ impl PiOracle {
 /// streaming `/chat/completions` request on its own thread and forwards
 /// sentence-sized chunks as SSE deltas arrive.
 pub struct HttpOracle {
-    base: String,   // e.g. https://api.openai.com/v1  (no trailing slash)
+    base: String, // e.g. https://api.openai.com/v1  (no trailing slash)
     key: String,
     model: String,
     max_tokens: u32,
@@ -400,15 +414,14 @@ pub struct HttpOracle {
 
 impl HttpOracle {
     pub fn new(remember: bool) -> std::io::Result<Self> {
-        let key = std::env::var("RIDDLE_OPENAI_KEY").map_err(|_| {
-            std::io::Error::other("RIDDLE_OPENAI_KEY not set")
-        })?;
+        let key = std::env::var("RIDDLE_OPENAI_KEY")
+            .map_err(|_| std::io::Error::other("RIDDLE_OPENAI_KEY not set"))?;
         let base = std::env::var("RIDDLE_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let base = base.trim_end_matches('/').to_string();
         // A vision-capable default; override with RIDDLE_OPENAI_MODEL.
-        let model = std::env::var("RIDDLE_OPENAI_MODEL")
-            .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let model =
+            std::env::var("RIDDLE_OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
         // Thinking models (Gemini 3.x, o-series…) count hidden reasoning
         // tokens against max_tokens: a tight cap starves the visible reply to
         // one sentence (finish_reason=length). The persona already keeps
@@ -425,7 +438,14 @@ impl HttpOracle {
             "riddle: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={}",
             reasoning.as_deref().unwrap_or("-")
         );
-        Ok(Self { base, key, model, max_tokens, reasoning, remember })
+        Ok(Self {
+            base,
+            key,
+            model,
+            max_tokens,
+            reasoning,
+            remember,
+        })
     }
 
     pub fn ask(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>) {
@@ -541,7 +561,10 @@ impl HttpOracle {
             let mut emit = |events: Vec<Result<Event, String>>| {
                 for ev in events {
                     if first {
-                        eprintln!("riddle: oracle first chunk +{}ms", asked.elapsed().as_millis());
+                        eprintln!(
+                            "riddle: oracle first chunk +{}ms",
+                            asked.elapsed().as_millis()
+                        );
                         first = false;
                     }
                     let _ = tx.send(ev);
@@ -549,7 +572,9 @@ impl HttpOracle {
             };
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
                 let line = line.trim();
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data == "[DONE]" {
                     break;
@@ -646,7 +671,9 @@ fn json_str_field(s: &str, key: &str) -> Option<String> {
                         // \uXXXX — needed for accented replies (French, em-dash…).
                         'u' => {
                             let hex: String = (0..4).filter_map(|_| chars.next()).collect();
-                            if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                            if let Some(ch) =
+                                u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                            {
                                 out.push(ch);
                             }
                         }
@@ -743,12 +770,24 @@ fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -820,7 +859,10 @@ mod tests {
         assert_eq!(ev, vec![Event::Show(800)]);
         let full = "\u{27e6}show:2\u{27e7}\n\u{2042} show me the garden page";
         let ev = drain(p.advance(full, true));
-        assert_eq!(ev, vec![Event::Transcript("show me the garden page".into())]);
+        assert_eq!(
+            ev,
+            vec![Event::Transcript("show me the garden page".into())]
+        );
     }
 
     #[test]
@@ -859,7 +901,10 @@ mod tests {
         let ev = drain(p.advance(full, true));
         assert_eq!(
             ev,
-            vec![Event::Show(800), Event::Transcript("show me the rain".into())]
+            vec![
+                Event::Show(800),
+                Event::Transcript("show me the rain".into())
+            ]
         );
     }
 
@@ -879,7 +924,9 @@ mod tests {
             ]
         );
         // The show glyphs never reached the writer.
-        assert!(!ev.iter().any(|e| matches!(e, Event::Ink(s) if s.contains('\u{27e6}'))));
+        assert!(!ev
+            .iter()
+            .any(|e| matches!(e, Event::Ink(s) if s.contains('\u{27e6}'))));
     }
 
     #[test]
