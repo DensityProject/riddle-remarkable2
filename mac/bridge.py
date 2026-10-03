@@ -14,7 +14,7 @@ Lockdown:
   anything is read.
   Plain HTTP + token: meant for trusted home Wi-Fi only
 - bearer token required (~/diary-bridge/token, 0600); constant-time compare
-- one request at a time, 8 MB body cap, 120 s Claude timeout
+- one request at a time, 8 MB body cap, 300 s Claude timeout
 - runs Claude in an empty working directory, no session persistence
 """
 import base64, hmac, http.server, json, os, re, subprocess, sys, threading, time
@@ -36,6 +36,10 @@ MODELS = {
     "opus": "claude-opus-5-5",
 }
 DEFAULT_MODEL = "sonnet"
+# OpenAI-style "reasoning_effort" from the client maps to `claude --effort`:
+# how long Claude may think before answering. Unset = the CLI's default.
+EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+CLAUDE_TIMEOUT = 300  # max effort can think for minutes
 os.makedirs(WORKDIR, exist_ok=True)
 busy = threading.Lock()
 _allow_cache = [None, set()]  # (mtime, addresses) of ALLOW_FILE
@@ -96,18 +100,20 @@ def build_turn(req):
     return system, blocks
 
 
-def stream_claude(system, blocks, model, emit):
+def stream_claude(system, blocks, model, emit, effort=None):
     """Run Claude headless and call emit(text) for each streamed text delta."""
     cmd = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
            "--verbose", "--include-partial-messages", "--model", model,
            "--tools", "", "--setting-sources", "", "--strict-mcp-config",
            "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands",
            "--no-session-persistence", "--system-prompt", system or "You are a diary."]
+    if effort in EFFORTS:
+        cmd += ["--effort", effort]
     msg = {"type": "user", "message": {"role": "user", "content": blocks}}
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_"))}
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, cwd=WORKDIR, env=env)
-    timer = threading.Timer(120, p.kill)
+    timer = threading.Timer(CLAUDE_TIMEOUT, p.kill)
     timer.start()
     streamed, final = False, ""
     try:
@@ -186,8 +192,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             t0 = time.time()
             try:
-                stream_claude(system, blocks, model, emit)
-                log(f"page answered by {model} in {time.time() - t0:.1f}s")
+                effort = req.get("reasoning_effort")
+                stream_claude(system, blocks, model, emit, effort)
+                log(f"page answered by {model} (effort {effort if effort in EFFORTS else 'default'}) in {time.time() - t0:.1f}s")
             except Exception as e:
                 log(f"claude failed: {e}")
                 emit("The ink would not answer. Try again in a moment.")
