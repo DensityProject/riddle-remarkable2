@@ -25,6 +25,7 @@ ALLOW_FILE = os.path.join(HERE, "allow")
 TOKEN_FILE = os.path.join(HERE, "token")
 APPS = "/home/root/xovi/exthome/appload"
 POLL = 4
+MAX_ALLOW = 8
 # The tablet's host key is the same on USB and Wi-Fi; pin it under the USB
 # name so a changed Wi-Fi address never needs a new known_hosts entry.
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
@@ -127,7 +128,7 @@ echo wifi=$(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}' | head -n 1)
 """
 
 # Reads the token from stdin, then sets KEY=VALUE lines in place (keeping
-# every other line). $1 = inkwell bridges, $2 = diary base.
+# every other line). $1 = inkwell bridges, $2 = diary bases.
 WRITE = r"""
 umask 077
 read -r TOKEN
@@ -185,15 +186,17 @@ def mac_networks():
 
 
 def mac_tailnet_ip():
-    """The Mac's Tailscale address, if Tailscale is installed and connected."""
-    for cli in ("/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"):
-        try:
-            r = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        ip = r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else ""
-        if ip.startswith("100."):
-            return ip
+    """The Mac's Tailscale address: a 100.64.0.0/10 address on a utun
+    interface. (The Tailscale CLI returns nothing when run from launchd.)"""
+    out = subprocess.run(["ifconfig"], capture_output=True, text=True).stdout
+    iface = ""
+    for line in out.splitlines():
+        m = re.match(r"^(\w+):", line)
+        if m:
+            iface = m.group(1)
+        m = re.search(r"inet (100\.\d+\.\d+\.\d+)", line)
+        if m and iface.startswith("utun") and ipaddress.ip_address(m.group(1)) in ipaddress.ip_network("100.64.0.0/10"):
+            return m.group(1)
     return ""
 
 
@@ -235,9 +238,18 @@ def sync(host, via):
     # whichever answered last to the front.
     order = ([url(n.ip) for n in same] + [url(USB_MAC)] + ([url(mac_ts)] if mac_ts and tablet_ts else [])
              + [url(n.ip) for n in other])
-    diary = order[0]
+    diary = ",".join(order)  # the diary also tries each in order
 
+    # Remember the tablet's recent addresses too (home Wi-Fi, hotspot, ...)
+    # so it is still let in after it moves networks without the cable. The
+    # bearer token is still required on every request.
     allow = [USB_TABLET] + ([str(tablet_net.ip)] if tablet_net else []) + ([tablet_ts] if tablet_ts else [])
+    try:
+        with open(ALLOW_FILE) as f:
+            allow += [l.strip() for l in f if l.strip()]
+    except OSError:
+        pass
+    allow = list(dict.fromkeys(allow))[:MAX_ALLOW]
     with open(ALLOW_FILE + ".tmp", "w") as f:
         f.write("\n".join(allow) + "\n")
     os.replace(ALLOW_FILE + ".tmp", ALLOW_FILE)
