@@ -19,8 +19,25 @@ pub const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
 pub const UPDATE_ALL: i32 = 0;
 pub const UPDATE_PARTIAL: i32 = 1;
 
+/// FBFMT_RM2FB: reMarkable 1/2, native 1404x1872, RGB565.
+pub const FBFMT_RM2FB: u8 = 0;
 /// FBFMT_RMPP_RGB565: native 1620x2160, 2 bytes/pixel, stride = 3240.
 pub const FBFMT_RMPP_RGB565: u8 = 3;
+/// Paper Pro Move and Paper Pure, RGB565.
+pub const FBFMT_RMPPM_RGB565: u8 = 6;
+pub const FBFMT_RMPPURE_RGB565: u8 = 9;
+
+/// The window size the qtfb server allocates for an RGB565 `format`. The
+/// server sizes the buffer from the format alone (INITIALIZE carries no
+/// width/height), so the client must use exactly these dimensions.
+pub fn rgb565_size(format: u8) -> Option<(usize, usize)> {
+    match format {
+        FBFMT_RM2FB | FBFMT_RMPPURE_RGB565 => Some((1404, 1872)),
+        FBFMT_RMPP_RGB565 => Some((1620, 2160)),
+        FBFMT_RMPPM_RGB565 => Some((954, 1696)),
+        _ => None,
+    }
+}
 
 #[allow(dead_code)]
 pub const REFRESH_MODE_UFAST: i32 = 0;
@@ -39,6 +56,12 @@ pub const INPUT_VKB_PRESS: i32 = 0x40;
 pub const INPUT_VKB_RELEASE: i32 = 0x41;
 
 const SOCKET_PATH: &str = "/tmp/qtfb.sock";
+
+// ServerMessage is a native C struct: { u8 type; union { {int key; size_t
+// size} init; {int type, devId, x, y, d} input; ... } }. The union is aligned
+// to size_t, so its payload starts at byte 8 on a 64-bit server (Paper Pro)
+// and byte 4 on a 32-bit one (reMarkable 1/2), and shmSize is 8 or 4 bytes.
+const SRV_PAYLOAD: usize = std::mem::size_of::<usize>();
 
 #[derive(Debug, Clone, Copy)]
 pub struct InputEvent {
@@ -102,8 +125,8 @@ impl QtfbClient {
         msg[8] = format;
         send_all(fd, &msg)?;
 
-        // Init reply: shmKey i32 @8, shmSize u64 @16. Server closing without
-        // replying (recv == 0) means init was rejected.
+        // Init reply: shmKey i32, then shmSize (size_t). Server closing
+        // without replying (recv == 0) means init was rejected.
         let mut reply = [0u8; 32];
         let n = unsafe { libc::recv(fd, reply.as_mut_ptr() as *mut libc::c_void, 32, 0) };
         if n <= 0 {
@@ -113,8 +136,10 @@ impl QtfbClient {
                 "qtfb server rejected init (no reply)",
             ));
         }
-        let shm_key = i32::from_le_bytes(reply[8..12].try_into().unwrap());
-        let shm_size = u64::from_le_bytes(reply[16..24].try_into().unwrap()) as usize;
+        let p = SRV_PAYLOAD;
+        let shm_key = i32::from_le_bytes(reply[p..p + 4].try_into().unwrap());
+        let s = 2 * p; // size_t follows the int, aligned to its own size
+        let shm_size = usize::from_le_bytes(reply[s..s + p].try_into().unwrap());
 
         let shm_path = format!("/dev/shm/qtfb_{}\0", shm_key);
         let shm_fd = unsafe { libc::open(shm_path.as_ptr() as *const libc::c_char, libc::O_RDWR) };
@@ -238,13 +263,15 @@ impl QtfbClient {
                 }
                 return Err(e);
             }
-            if buf[0] == MESSAGE_USERINPUT && n >= 28 {
+            let p = SRV_PAYLOAD;
+            if buf[0] == MESSAGE_USERINPUT && n as usize >= p + 20 {
+                let field = |i: usize| i32::from_le_bytes(buf[p + 4 * i..p + 4 * i + 4].try_into().unwrap());
                 out.push(InputEvent {
-                    input_type: i32::from_le_bytes(buf[8..12].try_into().unwrap()),
-                    dev_id: i32::from_le_bytes(buf[12..16].try_into().unwrap()),
-                    x: i32::from_le_bytes(buf[16..20].try_into().unwrap()),
-                    y: i32::from_le_bytes(buf[20..24].try_into().unwrap()),
-                    d: i32::from_le_bytes(buf[24..28].try_into().unwrap()),
+                    input_type: field(0),
+                    dev_id: field(1),
+                    x: field(2),
+                    y: field(3),
+                    d: field(4),
                 });
             }
         }

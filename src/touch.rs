@@ -5,6 +5,7 @@
 use std::io;
 use std::os::fd::RawFd;
 
+use crate::evdev;
 use crate::fb::screen_h;
 
 const EV_SYN: u16 = 0;
@@ -62,7 +63,7 @@ impl TouchDevice {
                         return Err(io::Error::last_os_error());
                     }
                     unsafe { libc::ioctl(fd, EVIOCGRAB, 1i32) };
-                    let (raw_min_y, raw_max_y) = read_abs_min_max(i, ABS_MT_POSITION_Y)
+                    let (raw_min_y, raw_max_y) = evdev::abs_range(fd, ABS_MT_POSITION_Y)
                         .unwrap_or((TOUCH_MIN_Y, TOUCH_MAX_Y));
                     return Ok(Self {
                         fd,
@@ -99,17 +100,15 @@ impl TouchDevice {
 
     pub fn drain(&mut self) -> Vec<Gesture> {
         let mut out = Vec::new();
-        let mut buf = [0u8; 24 * 64];
+        let mut buf = [0u8; evdev::EVENT_SIZE * 64];
         loop {
             let n =
                 unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n <= 0 {
                 break;
             }
-            for chunk in buf[..n as usize].chunks_exact(24) {
-                let etype = u16::from_le_bytes(chunk[16..18].try_into().unwrap());
-                let code = u16::from_le_bytes(chunk[18..20].try_into().unwrap());
-                let value = i32::from_le_bytes(chunk[20..24].try_into().unwrap());
+            for chunk in buf[..n as usize].chunks_exact(evdev::EVENT_SIZE) {
+                let (etype, code, value) = evdev::decode(chunk);
                 if etype == EV_ABS && code == ABS_MT_SLOT {
                     self.cur = (value.max(0) as usize).min(MAX_SLOTS - 1);
                 } else if etype == EV_ABS && code == ABS_MT_POSITION_Y {
@@ -193,13 +192,4 @@ impl Drop for TouchDevice {
             libc::close(self.fd);
         }
     }
-}
-
-fn read_abs_min_max(event_i: usize, code: u16) -> Option<(i32, i32)> {
-    let path = format!("/sys/class/input/event{event_i}/device/abs/abs{code}");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let mut parts = raw.split_whitespace();
-    let min = parts.next()?.parse().ok()?;
-    let max = parts.next()?.parse().ok()?;
-    Some((min, max))
 }

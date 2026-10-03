@@ -10,11 +10,16 @@ use std::os::fd::RawFd;
 
 use crate::fb::{screen_h, screen_w};
 
-// Digitizer axis ranges on the Paper Pro ("Elan marker input").
-const DIGI_MIN_X: i32 = 0;
-const DIGI_MAX_X: i32 = 11180;
-const DIGI_MIN_Y: i32 = 0;
-const DIGI_MAX_Y: i32 = 15340;
+use crate::evdev;
+
+// Fallback digitizer axis ranges, used only if EVIOCGABS fails.
+// Paper Pro ("Elan marker input"): axes already match the screen.
+const PP_MAX_X: i32 = 11180;
+const PP_MAX_Y: i32 = 15340;
+// reMarkable 1/2 ("Wacom I2C Digitizer"): mounted rotated 90 degrees, so raw X
+// runs down the screen (inverted) and raw Y runs across it.
+const WACOM_MAX_X: i32 = 20967;
+const WACOM_MAX_Y: i32 = 15725;
 pub const MAX_PRESSURE: i32 = 4096;
 
 const EV_SYN: u16 = 0;
@@ -56,6 +61,8 @@ pub struct PenDevice {
     raw_min_y: i32,
     raw_max_y: i32,
     raw_max_pressure: i32,
+    /// Wacom digitizer (rM1/rM2): swap axes and invert raw X.
+    rotated: bool,
     // Accumulated state between SYN_REPORTs.
     raw_x: i32,
     raw_y: i32,
@@ -71,18 +78,27 @@ pub struct PenDevice {
 impl PenDevice {
     /// Find and grab the marker input device.
     pub fn open() -> io::Result<Self> {
-        let (path, event_i) = find_marker_device()?;
-        let (raw_min_x, raw_max_x) =
-            read_abs_min_max(event_i, ABS_X).unwrap_or((DIGI_MIN_X, DIGI_MAX_X));
-        let (raw_min_y, raw_max_y) =
-            read_abs_min_max(event_i, ABS_Y).unwrap_or((DIGI_MIN_Y, DIGI_MAX_Y));
-        let (_, raw_max_pressure) =
-            read_abs_min_max(event_i, ABS_PRESSURE).unwrap_or((0, MAX_PRESSURE));
+        let (path, wacom) = find_marker_device()?;
         let cpath = std::ffi::CString::new(path.clone()).unwrap();
         let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        let (fx, fy) = if wacom { (WACOM_MAX_X, WACOM_MAX_Y) } else { (PP_MAX_X, PP_MAX_Y) };
+        let (raw_min_x, raw_max_x) = evdev::abs_range(fd, ABS_X).unwrap_or((0, fx));
+        let (raw_min_y, raw_max_y) = evdev::abs_range(fd, ABS_Y).unwrap_or((0, fy));
+        let (_, raw_max_pressure) =
+            evdev::abs_range(fd, ABS_PRESSURE).unwrap_or((0, MAX_PRESSURE));
+        // RIDDLE_PEN_ROTATE=0/1 overrides the per-digitizer default.
+        let rotated = match std::env::var("RIDDLE_PEN_ROTATE").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => wacom,
+        };
+        eprintln!(
+            "riddle: pen x {raw_min_x}..{raw_max_x} y {raw_min_y}..{raw_max_y} \
+             pressure 0..{raw_max_pressure} rotated {rotated}"
+        );
         let grab = unsafe { libc::ioctl(fd, EVIOCGRAB, 1i32) };
         if grab != 0 {
             eprintln!(
@@ -98,6 +114,7 @@ impl PenDevice {
             raw_min_y,
             raw_max_y,
             raw_max_pressure,
+            rotated,
             raw_x: 0,
             raw_y: 0,
             pressure: 0,
@@ -118,18 +135,15 @@ impl PenDevice {
     /// that changed state.
     pub fn drain(&mut self) -> Vec<PenSample> {
         let mut out = Vec::new();
-        // input_event on 64-bit: struct timeval (16) + type u16 + code u16 + value i32.
-        let mut buf = [0u8; 24 * 64];
+        let mut buf = [0u8; evdev::EVENT_SIZE * 64];
         loop {
             let n =
                 unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n <= 0 {
                 break;
             }
-            for chunk in buf[..n as usize].chunks_exact(24) {
-                let etype = u16::from_le_bytes(chunk[16..18].try_into().unwrap());
-                let code = u16::from_le_bytes(chunk[18..20].try_into().unwrap());
-                let value = i32::from_le_bytes(chunk[20..24].try_into().unwrap());
+            for chunk in buf[..n as usize].chunks_exact(evdev::EVENT_SIZE) {
+                let (etype, code, value) = evdev::decode(chunk);
                 match (etype, code) {
                     (EV_ABS, ABS_X) => {
                         self.raw_x = value;
@@ -166,14 +180,11 @@ impl PenDevice {
                     (EV_SYN, SYN_REPORT) => {
                         if self.dirty {
                             self.dirty = false;
-                            let sw = screen_w() as i32;
-                            let sh = screen_h() as i32;
-                            let xr = (self.raw_max_x - self.raw_min_x).max(1);
-                            let yr = (self.raw_max_y - self.raw_min_y).max(1);
+                            let (x, y) = self.to_screen(screen_w() as i32, screen_h() as i32);
                             let pr = self.raw_max_pressure.max(1);
                             out.push(PenSample {
-                                x: ((self.raw_x - self.raw_min_x) * (sw - 1) / xr).clamp(0, sw - 1),
-                                y: ((self.raw_y - self.raw_min_y) * (sh - 1) / yr).clamp(0, sh - 1),
+                                x,
+                                y,
                                 pressure: (self.pressure * MAX_PRESSURE / pr)
                                     .clamp(0, MAX_PRESSURE),
                                 tool: self.tool,
@@ -188,6 +199,24 @@ impl PenDevice {
         }
         out
     }
+
+    /// Map the current raw position to screen pixels.
+    fn to_screen(&self, sw: i32, sh: i32) -> (i32, i32) {
+        let xr = (self.raw_max_x - self.raw_min_x).max(1);
+        let yr = (self.raw_max_y - self.raw_min_y).max(1);
+        let (x, y) = if self.rotated {
+            (
+                (self.raw_y - self.raw_min_y) * (sw - 1) / yr,
+                (self.raw_max_x - self.raw_x) * (sh - 1) / xr,
+            )
+        } else {
+            (
+                (self.raw_x - self.raw_min_x) * (sw - 1) / xr,
+                (self.raw_y - self.raw_min_y) * (sh - 1) / yr,
+            )
+        };
+        (x.clamp(0, sw - 1), y.clamp(0, sh - 1))
+    }
 }
 
 impl Drop for PenDevice {
@@ -199,26 +228,65 @@ impl Drop for PenDevice {
     }
 }
 
-fn find_marker_device() -> io::Result<(String, usize)> {
+/// Find the pen digitizer. Returns its path and whether it is the rM1/rM2
+/// Wacom panel (which needs the rotated mapping).
+fn find_marker_device() -> io::Result<(String, bool)> {
     for i in 0..8 {
         let name_path = format!("/sys/class/input/event{i}/device/name");
         if let Ok(name) = std::fs::read_to_string(&name_path) {
-            if name.to_lowercase().contains("marker") {
-                return Ok((format!("/dev/input/event{i}"), i));
+            let name = name.to_lowercase();
+            let wacom = name.contains("wacom");
+            if name.contains("marker") || wacom {
+                return Ok((format!("/dev/input/event{i}"), wacom));
             }
         }
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        "no marker input device found",
+        "no pen digitizer (marker/wacom) input device found",
     ))
 }
 
-fn read_abs_min_max(event_i: usize, code: u16) -> Option<(i32, i32)> {
-    let path = format!("/sys/class/input/event{event_i}/device/abs/abs{code}");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let mut parts = raw.split_whitespace();
-    let min = parts.next()?.parse().ok()?;
-    let max = parts.next()?.parse().ok()?;
-    Some((min, max))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev(rotated: bool, max_x: i32, max_y: i32, raw_x: i32, raw_y: i32) -> PenDevice {
+        PenDevice {
+            fd: -1,
+            raw_min_x: 0,
+            raw_max_x: max_x,
+            raw_min_y: 0,
+            raw_max_y: max_y,
+            raw_max_pressure: MAX_PRESSURE,
+            rotated,
+            raw_x,
+            raw_y,
+            pressure: 0,
+            tool: Tool::Pen,
+            touching: false,
+            pen_in_range: false,
+            rubber_in_range: false,
+            proximity: false,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn paper_pro_maps_straight() {
+        let d = dev(false, PP_MAX_X, PP_MAX_Y, PP_MAX_X, 0);
+        assert_eq!(d.to_screen(1620, 2160), (1619, 0));
+        std::mem::forget(d);
+    }
+
+    #[test]
+    fn wacom_swaps_axes_and_inverts_raw_x() {
+        // Raw X max is the top of the screen; raw Y max is the right edge.
+        let d = dev(true, WACOM_MAX_X, WACOM_MAX_Y, WACOM_MAX_X, WACOM_MAX_Y);
+        assert_eq!(d.to_screen(1404, 1872), (1403, 0));
+        std::mem::forget(d);
+        let d = dev(true, WACOM_MAX_X, WACOM_MAX_Y, 0, 0);
+        assert_eq!(d.to_screen(1404, 1872), (0, 1871));
+        std::mem::forget(d);
+    }
 }

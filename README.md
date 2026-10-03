@@ -191,20 +191,28 @@ cd riddle
 cargo build --release --target aarch64-unknown-linux-gnu
 ```
 
-#### reMarkable 2 notes (windowed port)
+#### reMarkable 2 (windowed only)
 
-The **windowed qtfb backend** can run on reMarkable 2 by overriding panel
-settings in the launcher script/environment before starting `riddle`:
+The rM1/rM2 are 32-bit ARMv7, so they need their own build. Takeover mode
+stays Paper Pro only (it depends on the Quill/libqsgepaper stack), so on
+rM2 the diary runs in an AppLoad window and xochitl keeps the touchscreen
+and power button.
 
 ```sh
-export RIDDLE_QTFB_WIDTH=1404
-export RIDDLE_QTFB_HEIGHT=1872
-# Set this to the qtfb format id your AppLoad build expects (default is 3).
-export RIDDLE_QTFB_FORMAT=3
+scripts/build-rm2.sh          # cargo-zigbuild (macOS) or arm-linux-gnueabihf-gcc
+scripts/make-bundle-rm2.sh    # stages dist/riddle-rm2/
+scp -O -r dist/riddle-rm2 root@10.11.99.1:/home/root/xovi/exthome/appload/riddle
 ```
 
-Takeover mode is still Paper Pro-specific (it depends on the Quill/libqsgepaper
-stack used by this repository's bundle scripts).
+Then add `oracle.env` in that folder, and in AppLoad tap **Reload**, then
+**The Diary**.
+
+On rM2 the build defaults to qtfb format `0` (`FBFMT_RM2FB`, 1404x1872).
+The qtfb server sizes the window from the format alone, so the window size
+always follows `RIDDLE_QTFB_FORMAT`; there is no separate width/height
+setting. The rM2 Wacom pen is mounted rotated, so riddle swaps its axes
+automatically; if strokes land rotated or mirrored, set `RIDDLE_PEN_ROTATE=0`
+or `1` in `oracle.env` and report it.
 
 Install the binary to `/home/root/xovi/exthome/appload/riddle/` with an
 `external.manifest.json` that sets `"qtfb": true` and points `"application"`
