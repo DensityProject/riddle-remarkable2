@@ -63,6 +63,32 @@ rm-ssh-over-wlan off >/dev/null 2>&1 || true
 systemctl daemon-reload
 echo wifi_ssh=installed
 fi
+# The socket has been seen stopped with Wi-Fi up (cause unknown, logs
+# rotated): a 1-minute timer starts it again if it is ever down.
+if [ ! -f /etc/systemd/system/sshkey-wlan-watch.timer ]; then
+cat > /etc/systemd/system/sshkey-wlan-watch.service <<'EOF'
+[Unit]
+Description=Restart key-only Wi-Fi SSH if it stopped
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl start sshkey-wlan.socket
+EOF
+cat > /etc/systemd/system/sshkey-wlan-watch.timer <<'EOF'
+[Unit]
+Description=Check key-only Wi-Fi SSH every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now sshkey-wlan-watch.timer >/dev/null 2>&1
+echo wifi_ssh_watch=installed
+fi
 systemctl is-active -q sshkey-wlan.socket || systemctl enable --now sshkey-wlan.socket >/dev/null 2>&1
 echo wifi_ssh=$(systemctl is-active sshkey-wlan.socket)
 """
@@ -89,7 +115,7 @@ setkv APPS/riddle/oracle.env RIDDLE_OPENAI_KEY "$TOKEN"
 # The diary reads oracle.env only at launch and lingers after AppLoad closes
 # it; stop it so the next open picks up the new address. Inkwell re-reads
 # inkwell.env on every Ask, so it keeps running.
-pkill -x riddle 2>/dev/null && echo diary=restarted
+killall riddle 2>/dev/null && echo diary=restarted
 echo written
 """.replace("APPS", APPS)
 
