@@ -93,7 +93,36 @@ systemctl is-active -q sshkey-wlan.socket || systemctl enable --now sshkey-wlan.
 echo wifi_ssh=$(systemctl is-active sshkey-wlan.socket)
 """
 
-PROBE = WIFI_SSH + r"""
+# Tailscale (userspace, no /dev/net/tun on the rM2) lets the tablet reach
+# the Mac from any network, including ones that isolate Wi-Fi clients. Its
+# binaries live in /home (kept across OS updates); the unit in /etc isn't.
+TAILSCALE = r"""
+TS=/home/root/tailscale
+if [ -x $TS/tailscaled ]; then
+if [ ! -f /etc/systemd/system/tailscaled.service ]; then
+cat > /etc/systemd/system/tailscaled.service <<'EOF'
+[Unit]
+Description=Tailscale (userspace) so Inkwell can reach the Mac bridge from any network
+Requires=home.mount
+After=home.mount network-online.target
+
+[Service]
+ExecStart=/home/root/tailscale/tailscaled --tun=userspace-networking --statedir=/home/root/.tailscale --socket=/run/tailscale/tailscaled.sock --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=tailscale
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+fi
+systemctl is-active -q tailscaled || systemctl enable --now tailscaled >/dev/null 2>&1
+echo tailnet=$($TS/tailscale --socket=/run/tailscale/tailscaled.sock ip -4 2>/dev/null | head -n 1)
+fi
+"""
+
+PROBE = WIFI_SSH + TAILSCALE + r"""
 echo wifi=$(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}' | head -n 1)
 """
 
@@ -155,6 +184,19 @@ def mac_networks():
     return nets
 
 
+def mac_tailnet_ip():
+    """The Mac's Tailscale address, if Tailscale is installed and connected."""
+    for cli in ("/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"):
+        try:
+            r = subprocess.run([cli, "ip", "-4"], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        ip = r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else ""
+        if ip.startswith("100."):
+            return ip
+    return ""
+
+
 def ssh(host, script, args=(), stdin=""):
     """Run `script` with `args` on the tablet; secrets go only via stdin."""
     cmd = " ".join(shlex.quote(x) for x in ["sh", "-c", script, "sh", *args])
@@ -186,12 +228,16 @@ def sync(host, via):
     same = [n for n in nets if tablet_net and n.ip in tablet_net.network]
     other = [n for n in nets if n not in same]
     url = lambda ip: f"http://{ip}:{PORT}/v1"
-    # Same-network Wi-Fi first (works without the cable), then USB, then the
-    # Mac's other addresses in case the tablet joins that network later.
-    order = [url(n.ip) for n in same] + [url(USB_MAC)] + [url(n.ip) for n in other]
+    tablet_ts, mac_ts = kv.get("tailnet", ""), mac_tailnet_ip()
+    # Same-network Wi-Fi first (works without the cable), then USB, then
+    # Tailscale (any network, slower first hop), then the Mac's other
+    # addresses in case the tablet joins that network later. Inkwell moves
+    # whichever answered last to the front.
+    order = ([url(n.ip) for n in same] + [url(USB_MAC)] + ([url(mac_ts)] if mac_ts and tablet_ts else [])
+             + [url(n.ip) for n in other])
     diary = order[0]
 
-    allow = [USB_TABLET] + ([str(tablet_net.ip)] if tablet_net else [])
+    allow = [USB_TABLET] + ([str(tablet_net.ip)] if tablet_net else []) + ([tablet_ts] if tablet_ts else [])
     with open(ALLOW_FILE + ".tmp", "w") as f:
         f.write("\n".join(allow) + "\n")
     os.replace(ALLOW_FILE + ".tmp", ALLOW_FILE)
@@ -200,12 +246,15 @@ def sync(host, via):
     kv2, out = ssh(host, WRITE, [",".join(order), diary], stdin=token + "\n")
     if "written" not in out:
         raise RuntimeError("tablet did not confirm the write")
-    st = {"tablet_wifi": str(tablet_net.ip) if tablet_net else "", "mac": [str(n.ip) for n in nets],
+    st = {"tablet_wifi": str(tablet_net.ip) if tablet_net else "", "tablet_tailnet": tablet_ts,
+          "mac_tailnet": mac_ts, "mac": [str(n.ip) for n in nets],
           "bridges": order, "synced": time.strftime("%Y-%m-%d %H:%M:%S"), "via": via}
     save_state(st)
     log(f"synced via {via}: tablet wifi={st['tablet_wifi'] or 'off'} mac={st['mac']} "
-        f"bridges={order} wifi_ssh={kv.get('wifi_ssh')}{' diary restarted' if kv2.get('diary') else ''}")
-    if not tablet_net:
+        f"tailnet={tablet_ts or '-'}->{mac_ts or '-'} bridges={order} wifi_ssh={kv.get('wifi_ssh')}{' diary restarted' if kv2.get('diary') else ''}")
+    if tablet_ts and mac_ts:
+        notify("Linked. AI works on any network via Tailscale; you can unplug.")
+    elif not tablet_net:
         notify("Linked over USB. The tablet's Wi-Fi is off, so the AI needs the cable.")
     elif not same:
         notify(f"Linked, but the tablet ({tablet_net.ip}) is on a different network from this Mac "
