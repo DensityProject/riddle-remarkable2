@@ -35,7 +35,42 @@ use surface::{Surface, BLACK, FADED, WHITE};
 const FONT_TTF: &[u8] = include_bytes!("../fonts/DancingScript.ttf");
 const PNG_PATH: &str = "/tmp/riddle-page.png";
 
-const IDLE_COMMIT: Duration = Duration::from_millis(2800);
+/// Animation and commit timing, tuned per display backend.
+struct Pace {
+    /// Pen rest before the page is committed. RIDDLE_IDLE_MS overrides.
+    idle_commit: Duration,
+    drink_stages: u32,
+    fade_stages: u32,
+    /// Reply ink: points drawn per tick, and the tick length.
+    reply_points: i32,
+    reply_tick: Duration,
+}
+
+impl Pace {
+    fn for_display(takeover: bool) -> Self {
+        let mut p = if takeover {
+            Pace {
+                idle_commit: Duration::from_millis(2800),
+                drink_stages: 14,
+                fade_stages: 10,
+                reply_points: 26,
+                reply_tick: Duration::from_millis(14),
+            }
+        } else {
+            Pace {
+                idle_commit: Duration::from_millis(2000),
+                drink_stages: 7,
+                fade_stages: 5,
+                reply_points: 180,
+                reply_tick: Duration::from_millis(60),
+            }
+        };
+        if let Some(ms) = std::env::var("RIDDLE_IDLE_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            p.idle_commit = Duration::from_millis(ms.clamp(500, 10_000));
+        }
+        p
+    }
+}
 /// How long the diary waits on a silent oracle before giving up on the turn.
 /// Generous: thinking models can lead with a long silence.
 const ORACLE_PATIENCE: Duration = Duration::from_secs(120);
@@ -259,6 +294,12 @@ fn run() -> std::io::Result<()> {
     let mut last_flush = Instant::now();
     // Takeover swaps are cheap and synchronous; qtfb needs coalescing.
     let flush_every = if takeover { Duration::from_millis(8) } else { Duration::from_millis(35) };
+    // Windowed (qtfb) mode pays one xochitl repaint per update message, and
+    // the client blocks while the server catches up. So in a window, send
+    // fewer, larger updates: animate in coarser steps and batch more reply
+    // ink per update. Takeover keeps the fine-grained timing.
+    let pace = Pace::for_display(takeover);
+    eprintln!("riddle: idle commit {}ms", pace.idle_commit.as_millis());
 
     eprintln!("riddle: the diary is open");
 
@@ -414,7 +455,7 @@ fn run() -> std::io::Result<()> {
         // ---- state machine ----
         state = match state {
             State::Listening { last_pen } => match last_pen {
-                Some(t) if !pen_down && t.elapsed() >= IDLE_COMMIT && !user_ink.is_empty() => {
+                Some(t) if !pen_down && t.elapsed() >= pace.idle_commit && !user_ink.is_empty() => {
                     if region_all_white(&surf, user_ink.bbox) {
                         // Everything was erased before the pause: nothing to
                         // commit (and no phantom "?" from erased strokes).
@@ -470,12 +511,12 @@ fn run() -> std::io::Result<()> {
             },
 
             State::Drinking { stage, next, region, rx } => {
-                const STAGES: u32 = 14;
+                let stages: u32 = pace.drink_stages;
                 if Instant::now() >= next {
-                    ink::dissolve_pass(&mut surf, region, stage, STAGES);
+                    ink::dissolve_pass(&mut surf, region, stage, stages);
                     let (x, y, w, h) = region.rect();
                     disp.update(x, y, w, h, true);
-                    if stage + 1 >= STAGES {
+                    if stage + 1 >= stages {
                         user_ink.clear();
                         State::Thinking { rx, pulse: Instant::now(), blot_on: false, since: Instant::now() }
                     } else {
@@ -602,7 +643,7 @@ fn run() -> std::io::Result<()> {
                 }
                 if Instant::now() >= next {
                     let mut dirty = BBox::empty();
-                    let mut budget = 26;
+                    let mut budget = pace.reply_points;
                     while budget > 0 && plan.stroke_i < plan.strokes.len() {
                         let stroke = &plan.strokes[plan.stroke_i];
                         if plan.point_i >= stroke.len() {
@@ -643,7 +684,7 @@ fn run() -> std::io::Result<()> {
                         let region = plan.region;
                         State::Lingering { until: Instant::now() + linger.min(Duration::from_secs(20)), region }
                     } else {
-                        State::Replying { plan, next: Instant::now() + Duration::from_millis(14), rx }
+                        State::Replying { plan, next: Instant::now() + pace.reply_tick, rx }
                     }
                 } else {
                     State::Replying { plan, next, rx }
@@ -741,12 +782,12 @@ fn run() -> std::io::Result<()> {
             },
 
             State::FadingReply { stage, next, region } => {
-                const STAGES: u32 = 10;
+                let stages: u32 = pace.fade_stages;
                 if Instant::now() >= next {
-                    ink::dissolve_pass(&mut surf, region, stage, STAGES);
+                    ink::dissolve_pass(&mut surf, region, stage, stages);
                     let (x, y, w, h) = region.rect();
                     disp.update(x, y, w, h, true);
-                    if stage + 1 >= STAGES {
+                    if stage + 1 >= stages {
                         disp.full_refresh(surf.w, surf.h);
                         State::Listening { last_pen: None }
                     } else {
