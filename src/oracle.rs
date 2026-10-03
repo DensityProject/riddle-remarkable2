@@ -390,7 +390,10 @@ impl PiOracle {
 /// streaming `/chat/completions` request on its own thread and forwards
 /// sentence-sized chunks as SSE deltas arrive.
 pub struct HttpOracle {
-    base: String,   // e.g. https://api.openai.com/v1  (no trailing slash)
+    // e.g. https://api.openai.com/v1 (no trailing slash). Several bases,
+    // comma-separated in RIDDLE_OPENAI_BASE, are tried in order until one
+    // connects: USB and Wi-Fi addresses of the same bridge.
+    bases: Vec<String>,
     key: String,
     model: String,
     max_tokens: u32,
@@ -405,7 +408,15 @@ impl HttpOracle {
         })?;
         let base = std::env::var("RIDDLE_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let base = base.trim_end_matches('/').to_string();
+        let bases: Vec<String> = base
+            .split(',')
+            .map(|b| b.trim().trim_end_matches('/').to_string())
+            .filter(|b| !b.is_empty())
+            .collect();
+        if bases.is_empty() {
+            return Err(std::io::Error::other("RIDDLE_OPENAI_BASE is empty"));
+        }
+        let base = bases.join(", ");
         // A vision-capable default; override with RIDDLE_OPENAI_MODEL.
         let model = std::env::var("RIDDLE_OPENAI_MODEL")
             .unwrap_or_else(|_| "gpt-4o-mini".to_string());
@@ -425,7 +436,7 @@ impl HttpOracle {
             "riddle: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={}",
             reasoning.as_deref().unwrap_or("-")
         );
-        Ok(Self { base, key, model, max_tokens, reasoning, remember })
+        Ok(Self { bases, key, model, max_tokens, reasoning, remember })
     }
 
     pub fn ask(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>) {
@@ -436,7 +447,7 @@ impl HttpOracle {
                 return;
             }
         };
-        let (base, key, model) = (self.base.clone(), self.key.clone(), self.model.clone());
+        let (bases, key, model) = (self.bases.clone(), self.key.clone(), self.model.clone());
         let max_tokens = self.max_tokens;
         let reasoning_field = self
             .reasoning
@@ -497,11 +508,25 @@ impl HttpOracle {
                     json_quote(&user_text),
                     img,
                 );
-                agent
-                    .post(&format!("{base}/chat/completions"))
-                    .set("Authorization", &format!("Bearer {key}"))
-                    .set("Content-Type", "application/json")
-                    .send_string(&body)
+                // Fall through to the next base only when this one can't be
+                // reached at all; an HTTP error is the endpoint's answer.
+                let mut result = None;
+                for base in &bases {
+                    let r = agent
+                        .post(&format!("{base}/chat/completions"))
+                        .set("Authorization", &format!("Bearer {key}"))
+                        .set("Content-Type", "application/json")
+                        .send_string(&body);
+                    let unreachable = matches!(r, Err(ureq::Error::Transport(_)));
+                    if let Err(ureq::Error::Transport(e)) = &r {
+                        eprintln!("riddle: {base} unreachable ({e})");
+                    }
+                    result = Some(r);
+                    if !unreachable {
+                        break;
+                    }
+                }
+                result.expect("new() guarantees at least one base")
             };
 
             let asked = std::time::Instant::now();
