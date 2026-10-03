@@ -5,9 +5,13 @@
 use crate::surface::{PixFmt, Surface};
 use std::io;
 
+// 32-bit ARM builds run on the reMarkable 1/2; 64-bit ones on the Paper Pro.
+// RIDDLE_QTFB_FORMAT overrides (0 = rM1/rM2, 3 = Paper Pro, 6 = Paper Pro
+// Move, 9 = Paper Pure; RGB565 formats only).
+#[cfg(target_arch = "arm")]
+const DEFAULT_QTFB_FMT: u8 = crate::qtfb::FBFMT_RM2FB;
+#[cfg(not(target_arch = "arm"))]
 const DEFAULT_QTFB_FMT: u8 = crate::qtfb::FBFMT_RMPP_RGB565;
-const DEFAULT_QTFB_W: usize = crate::fb::SCREEN_W;
-const DEFAULT_QTFB_H: usize = crate::fb::SCREEN_H;
 
 pub enum Display {
     Qtfb(crate::qtfb::QtfbClient),
@@ -33,9 +37,13 @@ impl Display {
     pub fn open() -> io::Result<(Self, Surface)> {
         if let Ok(key) = std::env::var("QTFB_KEY") {
             let key: i32 = key.parse().map_err(io::Error::other)?;
-            let format = env_parse("RIDDLE_QTFB_FORMAT", DEFAULT_QTFB_FMT);
-            let width = env_parse("RIDDLE_QTFB_WIDTH", DEFAULT_QTFB_W);
-            let height = env_parse("RIDDLE_QTFB_HEIGHT", DEFAULT_QTFB_H);
+            let format = std::env::var("RIDDLE_QTFB_FORMAT")
+                .ok()
+                .and_then(|v| v.parse::<u8>().ok())
+                .unwrap_or(DEFAULT_QTFB_FMT);
+            let (width, height) = crate::qtfb::rgb565_size(format).ok_or_else(|| {
+                io::Error::other(format!("RIDDLE_QTFB_FORMAT={format} is not an RGB565 qtfb format"))
+            })?;
             let mut client = crate::qtfb::QtfbClient::connect(key, format, width, height, 2)?;
             let _ = client.set_refresh_mode(crate::qtfb::REFRESH_MODE_UFAST);
             let buf = client.framebuffer();
@@ -60,13 +68,6 @@ impl Display {
                 let surface = Surface::new(ptr, stride * h, w, h, stride, PixFmt::Rgb32);
                 Ok((Display::Quill, surface))
             }
-        }
-
-        fn env_parse<T: std::str::FromStr + Copy>(name: &str, default: T) -> T {
-            std::env::var(name)
-                .ok()
-                .and_then(|v| v.parse::<T>().ok())
-                .unwrap_or(default)
         }
         #[cfg(not(feature = "takeover"))]
         Err(io::Error::other(

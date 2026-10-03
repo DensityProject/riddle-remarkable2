@@ -19,8 +19,25 @@ pub const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
 pub const UPDATE_ALL: i32 = 0;
 pub const UPDATE_PARTIAL: i32 = 1;
 
+/// FBFMT_RM2FB: reMarkable 1/2, native 1404x1872, RGB565.
+pub const FBFMT_RM2FB: u8 = 0;
 /// FBFMT_RMPP_RGB565: native 1620x2160, 2 bytes/pixel, stride = 3240.
 pub const FBFMT_RMPP_RGB565: u8 = 3;
+/// Paper Pro Move and Paper Pure, RGB565.
+pub const FBFMT_RMPPM_RGB565: u8 = 6;
+pub const FBFMT_RMPPURE_RGB565: u8 = 9;
+
+/// The window size the qtfb server allocates for an RGB565 `format`. The
+/// server sizes the buffer from the format alone (INITIALIZE carries no
+/// width/height), so the client must use exactly these dimensions.
+pub fn rgb565_size(format: u8) -> Option<(usize, usize)> {
+    match format {
+        FBFMT_RM2FB | FBFMT_RMPPURE_RGB565 => Some((1404, 1872)),
+        FBFMT_RMPP_RGB565 => Some((1620, 2160)),
+        FBFMT_RMPPM_RGB565 => Some((954, 1696)),
+        _ => None,
+    }
+}
 
 #[allow(dead_code)]
 pub const REFRESH_MODE_UFAST: i32 = 0;

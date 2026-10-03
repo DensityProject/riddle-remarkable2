@@ -1,0 +1,8 @@
+{
+  "id": "riddle",
+  "name": "The Diary",
+  "version": "0.3.0",
+  "description": "An enchanted diary: write to it with the pen. It writes back, and it remembers.",
+  "application": "rm2-launch.sh",
+  "qtfb": true
+}

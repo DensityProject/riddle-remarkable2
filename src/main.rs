@@ -8,6 +8,7 @@
 //! built with --features takeover and launched with xochitl stopped.
 
 mod display;
+mod evdev;
 mod fb;
 mod help;
 mod ink;
