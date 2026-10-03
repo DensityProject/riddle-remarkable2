@@ -8,10 +8,12 @@
 use std::io;
 use std::os::fd::RawFd;
 
-use crate::fb::{SCREEN_H, SCREEN_W};
+use crate::fb::{screen_h, screen_w};
 
 // Digitizer axis ranges on the Paper Pro ("Elan marker input").
+const DIGI_MIN_X: i32 = 0;
 const DIGI_MAX_X: i32 = 11180;
+const DIGI_MIN_Y: i32 = 0;
 const DIGI_MAX_Y: i32 = 15340;
 pub const MAX_PRESSURE: i32 = 4096;
 
@@ -49,6 +51,11 @@ pub struct PenSample {
 
 pub struct PenDevice {
     fd: RawFd,
+    raw_min_x: i32,
+    raw_max_x: i32,
+    raw_min_y: i32,
+    raw_max_y: i32,
+    raw_max_pressure: i32,
     // Accumulated state between SYN_REPORTs.
     raw_x: i32,
     raw_y: i32,
@@ -64,7 +71,13 @@ pub struct PenDevice {
 impl PenDevice {
     /// Find and grab the marker input device.
     pub fn open() -> io::Result<Self> {
-        let path = find_marker_device()?;
+        let (path, event_i) = find_marker_device()?;
+        let (raw_min_x, raw_max_x) =
+            read_abs_min_max(event_i, ABS_X).unwrap_or((DIGI_MIN_X, DIGI_MAX_X));
+        let (raw_min_y, raw_max_y) =
+            read_abs_min_max(event_i, ABS_Y).unwrap_or((DIGI_MIN_Y, DIGI_MAX_Y));
+        let (_, raw_max_pressure) =
+            read_abs_min_max(event_i, ABS_PRESSURE).unwrap_or((0, MAX_PRESSURE));
         let cpath = std::ffi::CString::new(path.clone()).unwrap();
         let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
         if fd < 0 {
@@ -80,6 +93,11 @@ impl PenDevice {
         eprintln!("riddle: pen device {path} opened (grabbed: {})", grab == 0);
         Ok(Self {
             fd,
+            raw_min_x,
+            raw_max_x,
+            raw_min_y,
+            raw_max_y,
+            raw_max_pressure,
             raw_x: 0,
             raw_y: 0,
             pressure: 0,
@@ -148,10 +166,16 @@ impl PenDevice {
                     (EV_SYN, SYN_REPORT) => {
                         if self.dirty {
                             self.dirty = false;
+                            let sw = screen_w() as i32;
+                            let sh = screen_h() as i32;
+                            let xr = (self.raw_max_x - self.raw_min_x).max(1);
+                            let yr = (self.raw_max_y - self.raw_min_y).max(1);
+                            let pr = self.raw_max_pressure.max(1);
                             out.push(PenSample {
-                                x: self.raw_x * (SCREEN_W as i32 - 1) / DIGI_MAX_X,
-                                y: self.raw_y * (SCREEN_H as i32 - 1) / DIGI_MAX_Y,
-                                pressure: self.pressure,
+                                x: ((self.raw_x - self.raw_min_x) * (sw - 1) / xr).clamp(0, sw - 1),
+                                y: ((self.raw_y - self.raw_min_y) * (sh - 1) / yr).clamp(0, sh - 1),
+                                pressure: (self.pressure * MAX_PRESSURE / pr)
+                                    .clamp(0, MAX_PRESSURE),
                                 tool: self.tool,
                                 touching: self.touching,
                                 proximity: self.proximity,
@@ -175,12 +199,12 @@ impl Drop for PenDevice {
     }
 }
 
-fn find_marker_device() -> io::Result<String> {
+fn find_marker_device() -> io::Result<(String, usize)> {
     for i in 0..8 {
         let name_path = format!("/sys/class/input/event{i}/device/name");
         if let Ok(name) = std::fs::read_to_string(&name_path) {
             if name.to_lowercase().contains("marker") {
-                return Ok(format!("/dev/input/event{i}"));
+                return Ok((format!("/dev/input/event{i}"), i));
             }
         }
     }
@@ -188,4 +212,13 @@ fn find_marker_device() -> io::Result<String> {
         io::ErrorKind::NotFound,
         "no marker input device found",
     ))
+}
+
+fn read_abs_min_max(event_i: usize, code: u16) -> Option<(i32, i32)> {
+    let path = format!("/sys/class/input/event{event_i}/device/abs/abs{code}");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let mut parts = raw.split_whitespace();
+    let min = parts.next()?.parse().ok()?;
+    let max = parts.next()?.parse().ok()?;
+    Some((min, max))
 }

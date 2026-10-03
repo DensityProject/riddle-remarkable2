@@ -5,6 +5,10 @@
 use crate::surface::{PixFmt, Surface};
 use std::io;
 
+const DEFAULT_QTFB_FMT: u8 = crate::qtfb::FBFMT_RMPP_RGB565;
+const DEFAULT_QTFB_W: usize = crate::fb::SCREEN_W;
+const DEFAULT_QTFB_H: usize = crate::fb::SCREEN_H;
+
 pub enum Display {
     Qtfb(crate::qtfb::QtfbClient),
     #[allow(dead_code)]
@@ -29,17 +33,14 @@ impl Display {
     pub fn open() -> io::Result<(Self, Surface)> {
         if let Ok(key) = std::env::var("QTFB_KEY") {
             let key: i32 = key.parse().map_err(io::Error::other)?;
-            let mut client = crate::qtfb::QtfbClient::connect(
-                key,
-                crate::qtfb::FBFMT_RMPP_RGB565,
-                1620,
-                2160,
-                2,
-            )?;
+            let format = env_parse("RIDDLE_QTFB_FORMAT", DEFAULT_QTFB_FMT);
+            let width = env_parse("RIDDLE_QTFB_WIDTH", DEFAULT_QTFB_W);
+            let height = env_parse("RIDDLE_QTFB_HEIGHT", DEFAULT_QTFB_H);
+            let mut client = crate::qtfb::QtfbClient::connect(key, format, width, height, 2)?;
             let _ = client.set_refresh_mode(crate::qtfb::REFRESH_MODE_UFAST);
             let buf = client.framebuffer();
             let (ptr, len) = (buf.as_mut_ptr(), buf.len());
-            let surface = Surface::new(ptr, len, 1620, 2160, 1620 * 2, PixFmt::Rgb565);
+            let surface = Surface::new(ptr, len, width, height, width * 2, PixFmt::Rgb565);
             return Ok((Display::Qtfb(client), surface));
         }
 
@@ -59,6 +60,13 @@ impl Display {
                 let surface = Surface::new(ptr, stride * h, w, h, stride, PixFmt::Rgb32);
                 Ok((Display::Quill, surface))
             }
+        }
+
+        fn env_parse<T: std::str::FromStr + Copy>(name: &str, default: T) -> T {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse::<T>().ok())
+                .unwrap_or(default)
         }
         #[cfg(not(feature = "takeover"))]
         Err(io::Error::other(
