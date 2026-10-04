@@ -104,14 +104,17 @@ class LoginExpired(Exception):
     pass
 
 
-def stream_claude(system, blocks, model, emit, effort=None):
+def stream_claude(system, blocks, model, emit, effort=None, thinking=False):
     """Run Claude headless and call emit(text) for each streamed text delta."""
     cmd = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
            "--verbose", "--include-partial-messages", "--model", model,
            "--tools", "", "--setting-sources", "", "--strict-mcp-config",
            "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands",
            "--no-session-persistence", "--system-prompt", system or "You are a diary."]
-    if effort in EFFORTS:
+    # Extended thinking is off unless asked for: Claude Code otherwise thinks
+    # before every answer, which took 40-90 s on a page (2026-10-04).
+    cmd += ["--settings", json.dumps({"alwaysThinkingEnabled": bool(thinking)})]
+    if thinking and effort in EFFORTS:
         cmd += ["--effort", effort]
     msg = {"type": "user", "message": {"role": "user", "content": blocks}}
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_"))}
@@ -194,16 +197,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
 
+            t0 = time.time()
+            stats = {"first": None, "chars": 0}
+            imgs = sum(1 for b in blocks if b.get("type") == "image")
+
             def emit(text):
+                if stats["first"] is None:
+                    stats["first"] = time.time() - t0
+                stats["chars"] += len(text)
                 chunk = {"choices": [{"index": 0, "delta": {"content": text}}]}
                 self.wfile.write(("data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n").encode())
                 self.wfile.flush()
 
-            t0 = time.time()
             try:
                 effort = req.get("reasoning_effort")
-                stream_claude(system, blocks, model, emit, effort)
-                log(f"page answered by {model} (effort {effort if effort in EFFORTS else 'default'}) in {time.time() - t0:.1f}s")
+                thinking = bool(req.get("thinking"))
+                stream_claude(system, blocks, model, emit, effort, thinking)
+                first = f"{stats['first']:.1f}s" if stats["first"] is not None else "-"
+                log(f"page answered by {model} (thinking {'on' if thinking else 'off'}) in {time.time() - t0:.1f}s"
+                    f" (first text {first}, {stats['chars']} chars out, {imgs} images, {n // 1024} KB in)")
             except LoginExpired:
                 log("claude login expired: run `claude auth login` on the Mac")
                 emit("Claude's login on the Mac has expired. On the Mac, run: claude auth login")
