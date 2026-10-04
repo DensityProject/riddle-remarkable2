@@ -100,6 +100,10 @@ def build_turn(req):
     return system, blocks
 
 
+class LoginExpired(Exception):
+    pass
+
+
 def stream_claude(system, blocks, model, emit, effort=None):
     """Run Claude headless and call emit(text) for each streamed text delta."""
     cmd = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -115,7 +119,7 @@ def stream_claude(system, blocks, model, emit, effort=None):
                          stderr=subprocess.PIPE, text=True, cwd=WORKDIR, env=env)
     timer = threading.Timer(CLAUDE_TIMEOUT, p.kill)
     timer.start()
-    streamed, final = False, ""
+    streamed, final, auth_failed = False, "", False
     try:
         p.stdin.write(json.dumps(msg) + "\n")
         p.stdin.close()
@@ -133,9 +137,14 @@ def stream_claude(system, blocks, model, emit, effort=None):
                 final = ev.get("result") or ""
                 if ev.get("is_error"):
                     log("claude error: " + final[:200])
+                    if re.search(r"authenticat|oauth|log ?in", final, re.I):
+                        final = ""
+                        auth_failed = True
         p.wait()
     finally:
         timer.cancel()
+    if auth_failed and not streamed:
+        raise LoginExpired()
     if not streamed and final:
         emit(final)
     if not streamed and not final:
@@ -195,6 +204,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 effort = req.get("reasoning_effort")
                 stream_claude(system, blocks, model, emit, effort)
                 log(f"page answered by {model} (effort {effort if effort in EFFORTS else 'default'}) in {time.time() - t0:.1f}s")
+            except LoginExpired:
+                log("claude login expired: run `claude auth login` on the Mac")
+                emit("Claude's login on the Mac has expired. On the Mac, run: claude auth login")
             except Exception as e:
                 log(f"claude failed: {e}")
                 emit("The ink would not answer. Try again in a moment.")
