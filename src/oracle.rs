@@ -390,7 +390,10 @@ impl PiOracle {
 /// streaming `/chat/completions` request on its own thread and forwards
 /// sentence-sized chunks as SSE deltas arrive.
 pub struct HttpOracle {
-    base: String,   // e.g. https://api.openai.com/v1  (no trailing slash)
+    // e.g. https://api.openai.com/v1 (no trailing slash). Several bases,
+    // comma-separated in RIDDLE_OPENAI_BASE, are tried in order until one
+    // connects: USB and Wi-Fi addresses of the same bridge.
+    bases: Vec<String>,
     key: String,
     model: String,
     max_tokens: u32,
@@ -405,7 +408,15 @@ impl HttpOracle {
         })?;
         let base = std::env::var("RIDDLE_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let base = base.trim_end_matches('/').to_string();
+        let bases: Vec<String> = base
+            .split(',')
+            .map(|b| b.trim().trim_end_matches('/').to_string())
+            .filter(|b| !b.is_empty())
+            .collect();
+        if bases.is_empty() {
+            return Err(std::io::Error::other("RIDDLE_OPENAI_BASE is empty"));
+        }
+        let base = bases.join(", ");
         // A vision-capable default; override with RIDDLE_OPENAI_MODEL.
         let model = std::env::var("RIDDLE_OPENAI_MODEL")
             .unwrap_or_else(|_| "gpt-4o-mini".to_string());
@@ -425,7 +436,7 @@ impl HttpOracle {
             "riddle: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={}",
             reasoning.as_deref().unwrap_or("-")
         );
-        Ok(Self { base, key, model, max_tokens, reasoning, remember })
+        Ok(Self { bases, key, model, max_tokens, reasoning, remember })
     }
 
     pub fn ask(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>) {
@@ -436,7 +447,15 @@ impl HttpOracle {
                 return;
             }
         };
-        let (base, key, model) = (self.base.clone(), self.key.clone(), self.model.clone());
+        let (mut bases, key, model) = (self.bases.clone(), self.key.clone(), self.model.clone());
+        // Try the base that answered last time first, so a dead route (USB
+        // unplugged, other Wi-Fi) doesn't cost a connect timeout every page.
+        if let Some(good) = LAST_GOOD_BASE.lock().ok().and_then(|g| g.clone()) {
+            if let Some(i) = bases.iter().position(|b| *b == good) {
+                let b = bases.remove(i);
+                bases.insert(0, b);
+            }
+        }
         let max_tokens = self.max_tokens;
         let reasoning_field = self
             .reasoning
@@ -466,10 +485,20 @@ impl HttpOracle {
             // a stalled SSE stream leaves the diary "thinking" forever. The
             // read timeout is per-read, so a healthy stream can run long —
             // only silence trips it (thinking models can lead with ~a minute).
-            let agent = ureq::AgentBuilder::new()
-                .timeout_connect(std::time::Duration::from_secs(10))
-                .timeout_read(std::time::Duration::from_secs(90))
-                .build();
+            let build = |proxy: Option<ureq::Proxy>| {
+                let mut b = ureq::AgentBuilder::new()
+                    .timeout_connect(std::time::Duration::from_secs(5))
+                    .timeout_read(std::time::Duration::from_secs(90));
+                if let Some(p) = proxy {
+                    b = b.proxy(p);
+                }
+                b.build()
+            };
+            let direct = build(None);
+            // Tailscale addresses go through the tablet's userspace
+            // tailscaled (no /dev/net/tun on reMarkable), via its HTTP proxy.
+            let proxy = std::env::var("RIDDLE_TAILNET_PROXY").unwrap_or_else(|_| "http://127.0.0.1:1055".into());
+            let tailnet = build(Some(proxy).filter(|p| !p.is_empty()).and_then(|p| ureq::Proxy::new(p).ok()));
 
             // OpenAI chat-completions with a data-URI image part, streaming.
             // The token-cap field is provider-dependent: OpenAI's newest
@@ -497,11 +526,31 @@ impl HttpOracle {
                     json_quote(&user_text),
                     img,
                 );
-                agent
-                    .post(&format!("{base}/chat/completions"))
-                    .set("Authorization", &format!("Bearer {key}"))
-                    .set("Content-Type", "application/json")
-                    .send_string(&body)
+                // Fall through to the next base only when this one can't be
+                // reached at all; an HTTP error is the endpoint's answer.
+                let mut result = None;
+                for base in &bases {
+                    let agent = if is_tailnet(base) { &tailnet } else { &direct };
+                    let r = agent
+                        .post(&format!("{base}/chat/completions"))
+                        .set("Authorization", &format!("Bearer {key}"))
+                        .set("Content-Type", "application/json")
+                        .send_string(&body);
+                    // Gateway errors come from a relay (tailscaled with no
+                    // internet), not the oracle: also try the next base.
+                    let unreachable = matches!(r, Err(ureq::Error::Transport(_)) | Err(ureq::Error::Status(502..=504, _)));
+                    if let Err(ureq::Error::Transport(e)) = &r {
+                        eprintln!("riddle: {base} unreachable ({e})");
+                    }
+                    result = Some(r);
+                    if !unreachable {
+                        if let Ok(mut g) = LAST_GOOD_BASE.lock() {
+                            *g = Some(base.clone());
+                        }
+                        break;
+                    }
+                }
+                result.expect("new() guarantees at least one base")
             };
 
             let asked = std::time::Instant::now();
@@ -739,6 +788,15 @@ fn json_quote(s: &str) -> String {
     out
 }
 
+static LAST_GOOD_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// True for a base URL on a Tailscale address (100.64.0.0/10).
+fn is_tailnet(base: &str) -> bool {
+    let host = base.split("://").nth(1).unwrap_or(base).split([':', '/']).next().unwrap_or("");
+    let o: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    o.len() == 4 && o[0] == 100 && (64..128).contains(&o[1])
+}
+
 fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -773,6 +831,13 @@ mod tests {
         assert_eq!(sse_delta_content(line).as_deref(), Some("Déjà vu — oui"));
         let nl = r#"{"choices":[{"delta":{"content":"line\nbreak"}}]}"#;
         assert_eq!(sse_delta_content(nl).as_deref(), Some("line\nbreak"));
+    }
+
+    #[test]
+    fn spots_tailscale_addresses() {
+        assert!(is_tailnet("http://100.100.11.101:8788/v1"));
+        assert!(!is_tailnet("http://100.200.1.1:8788/v1"));
+        assert!(!is_tailnet("http://10.11.99.2:8788/v1"));
     }
 
     #[test]
