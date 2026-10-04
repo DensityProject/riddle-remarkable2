@@ -536,7 +536,9 @@ impl HttpOracle {
                         .set("Authorization", &format!("Bearer {key}"))
                         .set("Content-Type", "application/json")
                         .send_string(&body);
-                    let unreachable = matches!(r, Err(ureq::Error::Transport(_)));
+                    // Gateway errors come from a relay (tailscaled with no
+                    // internet), not the oracle: also try the next base.
+                    let unreachable = matches!(r, Err(ureq::Error::Transport(_)) | Err(ureq::Error::Status(502..=504, _)));
                     if let Err(ureq::Error::Transport(e)) = &r {
                         eprintln!("riddle: {base} unreachable ({e})");
                     }
