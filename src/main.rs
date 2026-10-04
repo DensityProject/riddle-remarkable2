@@ -293,7 +293,14 @@ fn run() -> std::io::Result<()> {
     let mut ink_dirty = BBox::empty();
     let mut last_flush = Instant::now();
     // Takeover swaps are cheap and synchronous; qtfb needs coalescing.
-    let flush_every = if takeover { Duration::from_millis(8) } else { Duration::from_millis(35) };
+    // RIDDLE_INK_FLUSH_MS tunes how long pen ink is batched before it is
+    // sent to the screen (lower = snappier, but more repaints to queue).
+    let flush_every = std::env::var("RIDDLE_INK_FLUSH_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|ms| Duration::from_millis(ms.clamp(1, 200)))
+        .unwrap_or(if takeover { Duration::from_millis(8) } else { Duration::from_millis(12) });
+    eprintln!("riddle: ink flush {}ms", flush_every.as_millis());
     // Windowed (qtfb) mode pays one xochitl repaint per update message, and
     // the client blocks while the server catches up. So in a window, send
     // fewer, larger updates: animate in coarser steps and batch more reply
