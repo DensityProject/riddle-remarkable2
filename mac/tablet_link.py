@@ -232,12 +232,14 @@ def sync(host, via):
     other = [n for n in nets if n not in same]
     url = lambda ip: f"http://{ip}:{PORT}/v1"
     tablet_ts, mac_ts = kv.get("tailnet", ""), mac_tailnet_ip()
-    # Same-network Wi-Fi first (works without the cable), then USB, then
-    # Tailscale (any network, slower first hop), then the Mac's other
-    # addresses in case the tablet joins that network later. Inkwell moves
+    # Same-network Wi-Fi first (works without the cable), then USB, then the
+    # Mac's other addresses, then Tailscale (any network). The apps move
     # whichever answered last to the front.
-    order = ([url(n.ip) for n in same] + [url(USB_MAC)] + ([url(mac_ts)] if mac_ts and tablet_ts else [])
-             + [url(n.ip) for n in other])
+    # Tailscale goes last: with no internet (e.g. a router blocking the
+    # tablet) its local relay hangs instead of failing, while a wrong LAN
+    # address fails within the connect timeout.
+    order = ([url(n.ip) for n in same] + [url(USB_MAC)] + [url(n.ip) for n in other]
+             + ([url(mac_ts)] if mac_ts and tablet_ts else []))
     diary = ",".join(order)  # the diary also tries each in order
 
     # Remember the tablet's recent addresses too (home Wi-Fi, hotspot, ...)
@@ -300,7 +302,9 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--once"]:
-        sync(USB_TABLET if reachable(USB_TABLET) else load_state().get("tablet_wifi", USB_TABLET), "manual")
+    if sys.argv[1:2] == ["--once"]:
+        # Optional host: `--once 192.168.4.16` syncs over that address.
+        host = sys.argv[2] if len(sys.argv) > 2 else (USB_TABLET if reachable(USB_TABLET) else load_state().get("tablet_wifi", USB_TABLET))
+        sync(host, "manual")
     else:
         main()
